@@ -1,0 +1,62 @@
+# Конфигурация парсера баннеров.
+# Значения можно переопределять через переменные окружения BP_* или флаги CLI.
+
+http:
+  user_agent: "Mozilla/5.0"
+  referer: "https://yandex.ru/maps/"
+  timeout: 25
+  max_retries: 3
+  # Анти-блок: пауза между запросами (сек) и пул прокси.
+  min_delay: 0.15
+  proxies: []          # напр. ["http://user:pass@host:port", ...]
+
+panorama:
+  overview_zoom: 2     # зум обзорной сшивки для детекции (0=макс, 4=мин)
+  crop_zoom: 0         # зум для финального кропа баннера (0 = максимум)
+  tile_workers: 16
+
+detector:
+  # backend: region | yolo
+  backend: region
+  yolo_weights: "weights/banner_yolo.pt"
+  conf: 0.35
+  # Для backend=region: нормализованные регионы (fx0,fy0,fx1,fy1) — демо/ручной режим.
+  regions: []
+
+verify:
+  # Проверка, что кроп — рекламный баннер (а не стена/небо/дорога).
+  enabled: true
+  backend: heuristic   # heuristic (без зависимостей) | clip (zero-shot, open-clip)
+  min_edge_density: 0.040
+  min_colorfulness: 18.0
+  min_saturation: 0.12
+  clip_threshold: 0.5
+
+ocr:
+  enabled: true        # требует easyocr; если не установлен — этап пропускается
+  languages: ["ru", "en"]
+  gpu: true
+
+classify:
+  # backend: keyword | clip
+  backend: keyword
+  categories:
+    - недвижимость
+    - авто
+    - финансы
+    - медицина
+    - ретейл
+    - услуги
+    - развлечения
+    - другое
+
+crawl:
+  max_nodes: 500       # предохранитель на число панорам за один обход
+  bbox: null           # [min_lon, min_lat, max_lon, max_lat] — рамка обхода
+
+storage:
+  db_path: "data/banners.sqlite"
+  images_dir: "data/images"
+
+export:
+  xlsx_path: "data/banners.xlsx"
