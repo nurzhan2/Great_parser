@@ -40,8 +40,16 @@ pip install osmnx                                         # seed-точки по
 # Одна точка (ручной регион баннера — режим демо/отладки):
 python -m banner_parser demo --lon 37.748763 --lat 55.712394 --region 0.66 0.63 0.795 0.86
 
-# Обход дорожного графа от точки (авто-детекция; нужен обученный YOLO):
-python -m banner_parser crawl --lon 37.70 --lat 55.71
+# Резюмируемый автономный обход Москвы (OWLv2 сам находит баннеры):
+python -m banner_parser crawl --lon 37.7050 --lat 55.6480          # без лимита — крутить пока не исчерпается очередь
+python -m banner_parser crawl --lon 37.7050 --lat 55.6480 --limit 200   # ограничить число панорам за запуск
+
+# Непрерывный запуск в фоне + мониторинг:
+nohup python -m banner_parser crawl --lon 37.7050 --lat 55.6480 > crawl.log 2>&1 &
+tail -f crawl.log                 # смотреть прогресс
+python -m banner_parser stats     # сколько баннеров найдено
+# Остановить: kill %1  (или найти PID: pgrep -f banner_parser)
+# Продолжить: та же команда crawl — состояние (посещённые+очередь) в БД, обход резюмируется
 
 # Обход прямоугольной области по дорогам:
 python -m banner_parser grid --bbox 37.70 55.71 37.76 55.74 --road --step 40

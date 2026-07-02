@@ -31,10 +31,11 @@ def cmd_demo(args) -> None:
 def cmd_crawl(args) -> None:
     p = _pipeline(args)
     total = 0
-    for r in p.crawl(args.lon, args.lat):
+    for r in p.crawl(args.lon, args.lat, max_panoramas=args.limit):
         total += 1
-        print(f"  [{r.category}] {r.panoid[:16]}… тел: {r.phones or '—'}")
-    print(f"Обход завершён: {total} новых баннеров. Всего в БД: {p.storage.count()}")
+        print(f"  [{r.category}] {r.panoid[:16]}… тел: {r.phones or '—'}  {r.address or ''}")
+    print(f"Обход остановлен: +{total} баннеров. Всего в БД: {p.storage.count()}, "
+          f"посещено панорам: {p.storage.visited_count()}, в очереди: {p.storage.frontier_pending()}")
     p.close()
 
 
@@ -85,9 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ручной регион баннера (можно несколько раз)")
     d.set_defaults(func=cmd_demo)
 
-    c = sub.add_parser("crawl", help="обход дорожного графа от точки")
+    c = sub.add_parser("crawl", help="резюмируемый обход графа от точки (в пределах bbox)")
     c.add_argument("--lon", type=float, required=True)
     c.add_argument("--lat", type=float, required=True)
+    c.add_argument("--limit", type=int, default=None,
+                   help="макс. панорам за запуск (по умолчанию — без лимита)")
     c.set_defaults(func=cmd_crawl)
 
     g = sub.add_parser("grid", help="обход bbox по сетке/дорогам")
@@ -108,7 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                        datefmt="%H:%M:%S")
+    for noisy in ("httpx", "urllib3", "transformers", "PIL", "filelock"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     args = build_parser().parse_args()
     args.func(args)
 

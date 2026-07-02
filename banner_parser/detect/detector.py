@@ -70,6 +70,64 @@ class YoloDetector(BannerDetector):
         return _dedup_overlaps(dets)
 
 
+class OwlDetector(BannerDetector):
+    """Zero-shot open-vocabulary детекция (OWLv2). Обучение не требуется —
+    ищет объекты по текстовым промптам. Работает по перспективным видам.
+    """
+
+    DEFAULT_PROMPTS = [
+        "a billboard", "an advertising banner", "a large advertising sign",
+        "an advertising poster on a construction fence", "a billboard on the street",
+    ]
+
+    def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble",
+                 conf: float = 0.20, n_views: int = 6, fov_h_deg: float = 90.0,
+                 view_size: int = 960, prompts: Optional[list[str]] = None):
+        self.model_name = model_name
+        self.conf = conf
+        self.n_views = n_views
+        self.fov_h_deg = fov_h_deg
+        self.view_size = view_size
+        self.prompts = prompts or self.DEFAULT_PROMPTS
+        self._model = self._proc = self._device = None
+
+    def _load(self):
+        if self._model is None:
+            import torch
+            from transformers import Owlv2ForObjectDetection, Owlv2Processor
+            self._device = ("mps" if torch.backends.mps.is_available()
+                            else "cuda" if torch.cuda.is_available() else "cpu")
+            self._proc = Owlv2Processor.from_pretrained(self.model_name)
+            self._model = Owlv2ForObjectDetection.from_pretrained(self.model_name).to(self._device)
+            self._model.eval()
+            log.info("OWLv2 загружен на %s", self._device)
+        return self._model
+
+    def detect(self, overview: Image.Image) -> list[Detection]:
+        import torch
+        from .reproject import horizon_views
+
+        model = self._load()
+        dets: list[Detection] = []
+        for _yaw, view in horizon_views(overview, self.n_views, self.fov_h_deg,
+                                        out=self.view_size):
+            img = view.image
+            inputs = self._proc(text=[self.prompts], images=img,
+                                return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            sizes = torch.tensor([img.size[::-1]]).to(self._device)  # (h, w)
+            res = self._proc.post_process_grounded_object_detection(
+                outputs, threshold=self.conf, target_sizes=sizes)[0]
+            uv = view.uv_map
+            for box, score in zip(res["boxes"].tolist(), res["scores"].tolist()):
+                x0, y0, x1, y1 = (int(v) for v in box)
+                det = _box_to_equirect(uv, x0, y0, x1, y1, float(score))
+                if det is not None:
+                    dets.append(det)
+        return _dedup_overlaps(dets)
+
+
 def _box_to_equirect(uv, x0, y0, x1, y1, score) -> Optional[Detection]:
     h, w = uv.shape[:2]
     x0, x1 = max(0, x0), min(w - 1, x1)
@@ -113,5 +171,10 @@ def build_detector(cfg) -> BannerDetector:
         return YoloDetector(
             weights=cfg.get("detector.yolo_weights", "weights/banner_yolo.pt"),
             conf=cfg.get("detector.conf", 0.35),
+        )
+    if backend == "owlv2":
+        return OwlDetector(
+            model_name=cfg.get("detector.owl_model", "google/owlv2-base-patch16-ensemble"),
+            conf=cfg.get("detector.conf", 0.20),
         )
     return RegionDetector(cfg.get("detector.regions", []))

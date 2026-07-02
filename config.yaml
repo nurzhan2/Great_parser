@@ -16,10 +16,11 @@ panorama:
   tile_workers: 16
 
 detector:
-  # backend: region | yolo
-  backend: region
+  # backend: region (ручные регионы) | yolo (обученный) | owlv2 (zero-shot, авто)
+  backend: owlv2
+  owl_model: "google/owlv2-base-patch16-ensemble"
+  conf: 0.22            # порог детекции; ниже — больше находок и больше ложных
   yolo_weights: "weights/banner_yolo.pt"
-  conf: 0.35
   # Для backend=region: нормализованные регионы (fx0,fy0,fx1,fy1) — демо/ручной режим.
   regions: []
 
@@ -50,9 +51,18 @@ classify:
     - развлечения
     - другое
 
+filter:
+  # Сохранять ТОЛЬКО баннеры этой темы (null = сохранять все).
+  # Требует рабочей классификации (OCR + ключевые слова или CLIP).
+  only_category: недвижимость
+
 crawl:
-  max_nodes: 500       # предохранитель на число панорам за один обход
-  bbox: null           # [min_lon, min_lat, max_lon, max_lat] — рамка обхода
+  # Рамка Москвы (примерно в пределах МКАД): [min_lon, min_lat, max_lon, max_lat].
+  # Обход не выходит за рамку. Для другого города — поменять bbox.
+  bbox: [37.35, 55.57, 37.85, 55.92]
+  # Минимальная дистанция между обрабатываемыми точками (м): панорамы ближе
+  # к уже снятой пропускаются — так один щит не снимается с соседних панорам.
+  min_distance_m: 250
 
 storage:
   db_path: "data/banners.sqlite"

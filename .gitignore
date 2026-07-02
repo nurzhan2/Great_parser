@@ -6,6 +6,7 @@ data/
 *.sqlite
 *.db
 *.xlsx
+*.log
 *.jpg
 *.jpeg
 *.png

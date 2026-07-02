@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -14,7 +15,6 @@ from .ocr import build_ocr, extract_phones
 from .storage import Storage
 from .verify import build_verifier
 from .yandex import HttpClient, Panorama
-from .yandex.graph import walk_graph
 from .yandex.meta import MetaClient
 from .yandex.panorama import load_panorama
 
@@ -36,37 +36,44 @@ class Pipeline:
         self.overview_zoom = cfg.get("panorama.overview_zoom", 2)
         self.crop_zoom = cfg.get("panorama.crop_zoom", 0)
         self.workers = cfg.get("panorama.tile_workers", 16)
+        self.only_category = cfg.get("filter.only_category", None)
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
         # Обзор нужен только детектору (в памяти), на диск не сохраняется.
         overview = pano.stitch(self.overview_zoom)
-        records: list[BannerRecord] = []
-        dets = self.detector.detect(overview)
+        # Один баннер с панорамы: берём лучший по score, что прошёл проверку и фильтр.
+        dets = sorted(self.detector.detect(overview), key=lambda d: d.score, reverse=True)
         log.info("panorama %s: %d detections", pano.ref.panoid, len(dets))
         for i, det in enumerate(dets):
             rec = self._process_detection(pano, det, i)
             if rec is not None and self.storage.save(rec):
-                records.append(rec)
-        return records
+                return [rec]
+        return []
 
     def _process_detection(self, pano: Panorama, det: Detection,
                            idx: int) -> Optional[BannerRecord]:
         crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=0.0)
-        text = self.ocr.read(crop) if self.ocr else ""
 
-        # Проверка: действительно ли это рекламный баннер.
+        # Сначала дешёвая проверка «это реклама» — до OCR.
         if self.verifier is not None:
-            vr = self.verifier.verify(crop, text)
+            vr = self.verifier.verify(crop)
             if not vr.is_ad:
                 log.info("отклонён (не реклама): %s [%s]", pano.ref.panoid, vr.reason)
                 return None
 
+        # OCR только для прошедших проверку кропов.
+        text = self.ocr.read(crop) if self.ocr else ""
+        category = self.classifier.classify(text, crop)
+        # Фильтр по теме: сохраняем только нужную категорию (напр. недвижимость).
+        if self.only_category and category != self.only_category:
+            log.info("пропущен (тема '%s' != '%s'): %s",
+                     category, self.only_category, pano.ref.panoid)
+            return None
+
         crop_path = self.images_dir / f"{pano.ref.panoid}_{idx}.jpg"
         crop.save(crop_path, quality=92)
-
         phones = extract_phones(text)
-        category = self.classifier.classify(text, crop)
         bearing = pano.bearing_of(det)
 
         bid = hashlib.md5(
@@ -96,16 +103,105 @@ class Pipeline:
             return []
         return self.process_panorama(pano)
 
-    def crawl(self, start_lon: float, start_lat: float) -> Iterator[BannerRecord]:
-        max_nodes = self.cfg.get("crawl.max_nodes", 500)
+    def crawl(self, start_lon: float, start_lat: float,
+              max_panoramas: Optional[int] = None) -> Iterator[BannerRecord]:
+        """Резюмируемый обход графа панорам в пределах bbox (напр. Москва).
+
+        Состояние (посещённые + очередь) хранится в БД — после остановки/сбоя
+        обход продолжается с того же места, без повторного скачивания.
+        max_panoramas — необязательный лимит на число панорам за один запуск
+        (None = без лимита, крутить пока не исчерпается очередь).
+        """
         bbox = self.cfg.get("crawl.bbox", None)
         bbox = tuple(bbox) if bbox else None
-        for ref in walk_graph(self.meta, start_lon, start_lat, max_nodes, bbox):
-            pano = Panorama(ref, self.http, self.workers)
-            yield from self.process_panorama(pano)
+        min_dist = self.cfg.get("crawl.min_distance_m", 250)
+        st = self.storage
+
+        # Посев: если состояние пустое — начинаем со стартовой точки.
+        if st.visited_count() == 0 and st.frontier_pending() == 0:
+            raw = self.meta.by_coords(start_lon, start_lat)
+            if raw:
+                ref = self.meta.parse(raw)
+                st.mark_visited(ref.panoid)
+                if _in_bbox(ref.lon, ref.lat, bbox):
+                    st.enqueue(ref.neighbor_oids)
+                    clat, clon = _cell_coords(ref.lon, ref.lat, min_dist)
+                    st.mark_cell(f"{clat}:{clon}", ref.lon, ref.lat)
+                    yield from self.process_panorama(Panorama(ref, self.http, self.workers))
+                st.commit()
+
+        processed = 0
+        while True:
+            oid = st.next_oid()
+            if oid is None:
+                log.info("frontier пуст — обход завершён (%d панорам)", st.visited_count())
+                break
+            raw = self.meta.by_oid(oid)
+            st.mark_oid_done(oid)
+            if raw is None:
+                st.commit()
+                continue
+            ref = self.meta.parse(raw)
+            if st.is_visited(ref.panoid):
+                st.commit()
+                continue
+            st.mark_visited(ref.panoid)
+            if not _in_bbox(ref.lon, ref.lat, bbox):
+                st.commit()          # за пределами рамки — не разворачиваем дальше
+                continue
+            # Соседей ставим в очередь всегда — чтобы продолжать движение.
+            st.enqueue(ref.neighbor_oids)
+            # Детекцию запускаем только если рядом (< min_dist) ещё не снимали.
+            clat, clon = _cell_coords(ref.lon, ref.lat, min_dist)
+            near = st.points_in_cells(_neighbor_keys(clat, clon))
+            if _too_close(ref.lon, ref.lat, near, min_dist):
+                st.commit()
+                continue
+            st.mark_cell(f"{clat}:{clon}", ref.lon, ref.lat)
+            try:
+                yield from self.process_panorama(Panorama(ref, self.http, self.workers))
+            except Exception as e:   # noqa: BLE001 — обход не должен падать на одной панораме
+                log.warning("ошибка обработки %s: %s", ref.panoid, e)
+            st.commit()
+            processed += 1
+            if processed % 20 == 0:
+                log.info("обход: посещено %d, снято точек %d, в очереди %d, баннеров %d",
+                         st.visited_count(), processed, st.frontier_pending(), st.count())
+            if max_panoramas and processed >= max_panoramas:
+                log.info("достигнут лимит %d обработанных точек за запуск", max_panoramas)
+                break
 
     def close(self) -> None:
         self.storage.close()
+
+
+def _in_bbox(lon: float, lat: float, bbox) -> bool:
+    if not bbox:
+        return True
+    return bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]
+
+
+def _cell_coords(lon: float, lat: float, dist_m: float) -> tuple[int, int]:
+    """Индексы ячейки сетки со стороной ~dist_m метров."""
+    dlat = dist_m / 111_320.0
+    dlon = dist_m / (111_320.0 * max(0.1, math.cos(math.radians(lat))))
+    return round(lat / dlat), round(lon / dlon)
+
+
+def _neighbor_keys(clat: int, clon: int) -> list[str]:
+    """Ключи ячейки и её 8 соседей (окрестность 3×3)."""
+    return [f"{clat + i}:{clon + j}" for i in (-1, 0, 1) for j in (-1, 0, 1)]
+
+
+def _haversine_m(lon0: float, lat0: float, lon1: float, lat1: float) -> float:
+    mlat = math.radians((lat0 + lat1) / 2)
+    dx = (lon1 - lon0) * 111_320.0 * math.cos(mlat)
+    dy = (lat1 - lat0) * 111_320.0
+    return math.hypot(dx, dy)
+
+
+def _too_close(lon: float, lat: float, points, min_dist: float) -> bool:
+    return any(_haversine_m(lon, lat, plon, plat) < min_dist for plon, plat in points)
 
 
 def _yandex_url(lon: float, lat: float, bearing: Optional[float]) -> str:
