@@ -21,6 +21,26 @@ detector:
   owl_model: "google/owlv2-base-patch16-ensemble"
   conf: 0.22            # порог детекции; ниже — больше находок и больше ложных
   yolo_weights: "weights/banner_yolo.pt"
+  # Промпты OWLv2. Детекция сохраняется, только если лучшая метка попала
+  # в prompts; всё, что модель отнесла к negative_prompts, отбрасывается.
+  # Без отвлекающих классов у модели нет варианта «это не реклама», и
+  # рекламной меткой помечаются дорожные знаки, фонари, детские площадки
+  # и таблички с адресом (замерено: точность 10% против 100% с ними).
+  prompts:
+    - "a billboard advertisement"
+    - "an advertising banner on a construction fence"
+    - "a large printed advertisement with text"
+  negative_prompts:
+    - "a road traffic sign"
+    - "a children playground"
+    - "a street lamp post"
+    - "a residential apartment building"
+    - "a parked car"
+    - "trees and bushes"
+    - "a wall with graffiti"
+  # Потолок сохраняемых баннеров с одной панорамы: на одной панораме бывает
+  # 180+ детекций, без потолка ограждение даст сотню записей за визит.
+  max_per_panorama: 10
   # Для backend=region: нормализованные регионы (fx0,fy0,fx1,fy1) — демо/ручной режим.
   regions: []
 

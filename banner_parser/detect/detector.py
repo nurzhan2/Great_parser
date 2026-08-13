@@ -76,19 +76,31 @@ class OwlDetector(BannerDetector):
     """
 
     DEFAULT_PROMPTS = [
-        "a billboard", "an advertising banner", "a large advertising sign",
-        "an advertising poster on a construction fence", "a billboard on the street",
+        "a billboard advertisement",
+        "an advertising banner on a construction fence",
+        "a large printed advertisement with text",
+    ]
+    # Отвлекающие классы. Модели нужен вариант «это не реклама», иначе любой
+    # прямоугольный цветной объект получает рекламную метку: дорожные знаки,
+    # фонари, детские площадки, таблички с адресом дома.
+    DEFAULT_NEGATIVE_PROMPTS = [
+        "a road traffic sign", "a children playground", "a street lamp post",
+        "a residential apartment building", "a parked car", "trees and bushes",
+        "a wall with graffiti",
     ]
 
     def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble",
                  conf: float = 0.20, n_views: int = 6, fov_h_deg: float = 90.0,
-                 view_size: int = 960, prompts: Optional[list[str]] = None):
+                 view_size: int = 960, prompts: Optional[list[str]] = None,
+                 negative_prompts: Optional[list[str]] = None):
         self.model_name = model_name
         self.conf = conf
         self.n_views = n_views
         self.fov_h_deg = fov_h_deg
         self.view_size = view_size
         self.prompts = prompts or self.DEFAULT_PROMPTS
+        self.negative_prompts = (self.DEFAULT_NEGATIVE_PROMPTS
+                                 if negative_prompts is None else negative_prompts)
         self._model = self._proc = self._device = None
 
     def _load(self):
@@ -108,11 +120,17 @@ class OwlDetector(BannerDetector):
         from .reproject import horizon_views
 
         model = self._load()
+        # Рекламные промпты идут первыми: всё, что модель отнесла к индексам
+        # за их пределами, — отвлекающий класс, такую детекцию выбрасываем.
+        all_prompts = list(self.prompts) + list(self.negative_prompts)
+        n_ad = len(self.prompts)
+
         dets: list[Detection] = []
+        dropped = 0
         for _yaw, view in horizon_views(overview, self.n_views, self.fov_h_deg,
                                         out=self.view_size):
             img = view.image
-            inputs = self._proc(text=[self.prompts], images=img,
+            inputs = self._proc(text=[all_prompts], images=img,
                                 return_tensors="pt").to(self._device)
             with torch.no_grad():
                 outputs = model(**inputs)
@@ -120,11 +138,19 @@ class OwlDetector(BannerDetector):
             res = self._proc.post_process_grounded_object_detection(
                 outputs, threshold=self.conf, target_sizes=sizes)[0]
             uv = view.uv_map
-            for box, score in zip(res["boxes"].tolist(), res["scores"].tolist()):
+            for box, score, label in zip(res["boxes"].tolist(),
+                                         res["scores"].tolist(),
+                                         res["labels"].tolist()):
+                if int(label) >= n_ad:          # знак / фонарь / машина / площадка
+                    dropped += 1
+                    continue
                 x0, y0, x1, y1 = (int(v) for v in box)
                 det = _box_to_equirect(uv, x0, y0, x1, y1, float(score))
                 if det is not None:
+                    det.label = all_prompts[int(label)]
                     dets.append(det)
+        if dropped:
+            log.info("отброшено по отвлекающим классам: %d детекций", dropped)
         return _dedup_overlaps(dets)
 
 
@@ -176,5 +202,7 @@ def build_detector(cfg) -> BannerDetector:
         return OwlDetector(
             model_name=cfg.get("detector.owl_model", "google/owlv2-base-patch16-ensemble"),
             conf=cfg.get("detector.conf", 0.20),
+            prompts=cfg.get("detector.prompts", None),
+            negative_prompts=cfg.get("detector.negative_prompts", None),
         )
     return RegionDetector(cfg.get("detector.regions", []))
