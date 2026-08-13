@@ -162,21 +162,34 @@ class Pipeline:
         log.info("состояние до старта: посещено %d, в очереди %d, баннеров в БД %d",
                  st.visited_count(), st.frontier_pending(), st.count())
 
-        # Посев: если состояние пустое — начинаем со стартовой точки.
-        if st.visited_count() == 0 and st.frontier_pending() == 0:
-            log.info("состояние пустое — посев от стартовой точки %f,%f",
-                     start_lon, start_lat)
-            runlog.set_stage("посев стартовой точки")
-            raw = self.meta.by_coords(start_lon, start_lat)
-            if raw:
-                ref = self.meta.parse(raw)
+        # Посев стартовой точки. Раньше он срабатывал только на пустом
+        # состоянии, и запуск с новыми --lon/--lat молча игнорировал
+        # координаты, продолжая старый обход. Теперь сеем всегда, если эта
+        # панорама ещё не посещалась — так в общую БД можно добавить второй
+        # и третий старт. Цена: один лишний meta-запрос на запуск.
+        runlog.set_stage("посев стартовой точки")
+        raw = self.meta.by_coords(start_lon, start_lat)
+        if raw is None:
+            log.warning("стартовая точка %f,%f: meta не отдала панораму — "
+                        "посев пропущен, идём по существующей очереди",
+                        start_lon, start_lat)
+        else:
+            ref = self.meta.parse(raw)
+            if st.is_visited(ref.panoid):
+                log.info("стартовая панорама %s уже посещалась — "
+                         "продолжаем существующий обход", ref.panoid)
+            elif not _in_bbox(ref.lon, ref.lat, bbox):
+                log.warning("стартовая точка %f,%f вне bbox %s — посев пропущен",
+                            ref.lon, ref.lat, bbox)
+            else:
+                log.info("посев новой стартовой точки %f,%f (панорама %s)",
+                         ref.lon, ref.lat, ref.panoid)
                 st.mark_visited(ref.panoid)
-                if _in_bbox(ref.lon, ref.lat, bbox):
-                    st.enqueue(ref.neighbor_oids)
-                    clat, clon = _cell_coords(ref.lon, ref.lat, min_dist)
-                    st.mark_cell(f"{clat}:{clon}", ref.lon, ref.lat)
-                    yield from self.process_panorama(Panorama(ref, self.http, self.workers))
-                st.commit()
+                st.enqueue(ref.neighbor_oids)
+                clat, clon = _cell_coords(ref.lon, ref.lat, min_dist)
+                st.mark_cell(f"{clat}:{clon}", ref.lon, ref.lat)
+                yield from self.process_panorama(Panorama(ref, self.http, self.workers))
+            st.commit()
 
         processed = 0
         meta_fails = 0          # подряд идущие отказы meta-API — признак блокировки
