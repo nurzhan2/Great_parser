@@ -82,6 +82,19 @@ class Panorama:
                        pad: float = 0.02) -> Image.Image:
         return self.crop_region(det.fx0, det.fy0, det.fx1, det.fy1, zoom=zoom, pad=pad)
 
+    def crop_size_px(self, det: Detection, zoom: Optional[int] = None,
+                     pad: float = 0.0) -> tuple[int, int]:
+        """Размер будущего кропа в пикселях — БЕЗ скачивания тайлов.
+
+        Нужен, чтобы отбраковывать заведомо непригодные детекции до сетевых
+        запросов: кроп в максимальном зуме стоит несколько тайлов.
+        """
+        z = self.ref.max_zoom if zoom is None else zoom
+        zl = self.ref.zoom(z)
+        fx0, fy0 = max(0.0, det.fx0 - pad), max(0.0, det.fy0 - pad)
+        fx1, fy1 = min(1.0, det.fx1 + pad), min(1.0, det.fy1 + pad)
+        return (int((fx1 - fx0) * zl.width), int((fy1 - fy0) * zl.height))
+
     # ---- геопривязка -----------------------------------------------------
     def fx_to_azimuth(self, fx: float) -> float:
         """Горизонтальная доля [0..1] → компас-азимут (град).

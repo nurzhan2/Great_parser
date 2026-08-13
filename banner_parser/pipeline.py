@@ -47,6 +47,15 @@ class Pipeline:
         self.max_per_panorama = cfg.get("detector.max_per_panorama", 10)
         # Кандидатов на разбор больше, чем сохраняемых: часть отсеет verify.
         self.max_candidates = cfg.get("detector.max_candidates", 30)
+        # Отбраковка по размеру будущего кропа. Размер НЕ разделяет рекламу
+        # и мусор (замерено: медиана минимальной стороны 143 px у настоящих
+        # против 184 px у ложных), поэтому пороги ставим только там, где кроп
+        # заведомо непригоден: слишком мелкий — нечитаем, слишком крупный —
+        # это забор или стена во весь кадр, а не щит.
+        self.min_crop_side = cfg.get("detector.min_crop_side", 50)
+        self.min_crop_area = cfg.get("detector.min_crop_area", 5000)
+        self.max_crop_area = cfg.get("detector.max_crop_area", 800_000)
+        self.crop_pad = cfg.get("detector.crop_pad", 0.0)
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
@@ -97,7 +106,16 @@ class Pipeline:
         """Возвращает (запись, кроп). Файл не пишет — это делает вызывающий
         после того, как запись прошла дедуп."""
         runlog.set_stage(f"кроп {pano.ref.panoid[:16]}")
-        crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=0.0)
+        # Размер считаем до скачивания тайлов — непригодные отсеиваем бесплатно.
+        w, h = pano.crop_size_px(det, zoom=self.crop_zoom, pad=self.crop_pad)
+        if min(w, h) < self.min_crop_side or w * h < self.min_crop_area:
+            log.info("отброшен (кроп мелкий %dx%d): %s", w, h, pano.ref.panoid)
+            return None, None
+        if self.max_crop_area and w * h > self.max_crop_area:
+            log.info("отброшен (кроп огромный %dx%d — похоже на забор/стену "
+                     "во весь кадр, а не щит): %s", w, h, pano.ref.panoid)
+            return None, None
+        crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=self.crop_pad)
 
         # Сначала дешёвая проверка «это реклама» — до OCR.
         if self.verifier is not None:
