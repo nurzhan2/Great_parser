@@ -30,9 +30,42 @@ def grid_seeds(bbox: BBox, step_m: float = 150.0) -> Iterator[tuple[float, float
         lat += dlat
 
 
-def road_seeds(bbox: BBox, step_m: float = 40.0,
-               network_type: str = "drive") -> Iterator[tuple[float, float]]:
-    """Точки вдоль дорог OSM с шагом step_m. Требует osmnx (+ shapely, networkx)."""
+# Классы дорог, вдоль которых вообще стоит наружная реклама. network_type="drive"
+# тянет ещё и service/residential, то есть внутридворовые проезды — обход по ним
+# уходит во дворы, где рекламы нет физически.
+ROAD_CLASSES = ("motorway", "trunk", "primary", "secondary", "tertiary")
+
+
+def _graph_from_bbox(ox, bbox: BBox, road_classes, network_type: str):
+    """Совместимость osmnx 1.x/2.x: в 2.0 сигнатура graph_from_bbox сменилась
+    с четырёх позиционных (north, south, east, west) на один кортеж
+    bbox=(left, bottom, right, top)."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    custom = None
+    if road_classes:
+        custom = '["highway"~"' + "|".join(road_classes) + '"]'
+    try:                                    # osmnx >= 2.0
+        if custom:
+            return ox.graph_from_bbox(bbox=(min_lon, min_lat, max_lon, max_lat),
+                                      custom_filter=custom)
+        return ox.graph_from_bbox(bbox=(min_lon, min_lat, max_lon, max_lat),
+                                  network_type=network_type)
+    except TypeError:                       # osmnx 1.x
+        log.info("osmnx со старой сигнатурой graph_from_bbox — используем её")
+        if custom:
+            return ox.graph_from_bbox(max_lat, min_lat, max_lon, min_lon,
+                                      custom_filter=custom)
+        return ox.graph_from_bbox(max_lat, min_lat, max_lon, min_lon,
+                                  network_type=network_type)
+
+
+def road_seeds(bbox: BBox, step_m: float = 40.0, network_type: str = "drive",
+               road_classes=ROAD_CLASSES) -> Iterator[tuple[float, float]]:
+    """Точки вдоль дорог OSM с шагом step_m. Требует osmnx (+ shapely, networkx).
+
+    road_classes=None вернёт прежнее поведение (все проезжие дороги, включая
+    дворовые); по умолчанию оставляем только магистрали и улицы.
+    """
     try:
         import osmnx as ox
     except Exception as e:  # noqa: BLE001
@@ -40,8 +73,16 @@ def road_seeds(bbox: BBox, step_m: float = 40.0,
         yield from grid_seeds(bbox, step_m=150.0)
         return
 
-    min_lon, min_lat, max_lon, max_lat = bbox
-    G = ox.graph_from_bbox(max_lat, min_lat, max_lon, min_lon, network_type=network_type)
+    try:
+        G = _graph_from_bbox(ox, bbox, road_classes, network_type)
+    except Exception as e:  # noqa: BLE001
+        # Пустой ответ Overpass на узкий фильтр — обычное дело для маленькой рамки.
+        log.warning("не удалось построить дорожный граф (%s: %s) — откат к сетке",
+                    type(e).__name__, e)
+        yield from grid_seeds(bbox, step_m=150.0)
+        return
+    log.info("дорожный граф: %d рёбер, классы %s",
+             len(G.edges), ",".join(road_classes) if road_classes else network_type)
     G = ox.project_graph(G)
     _, edges = ox.graph_to_gdfs(G)
     edges_ll = edges.to_crs(epsg=4326)
