@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Iterator, Optional
 
+from PIL import Image
+
 from . import runlog
 from .classify import build_classifier
 from .config import Config
@@ -76,9 +78,14 @@ class Pipeline:
                          "остальные %d детекций не разбираем",
                          pid, self.max_per_panorama, len(dets) - i)
                 break
-            rec = self._process_detection(pano, det, i)
-            if rec is not None and self.storage.save(rec):
-                saved.append(rec)
+            rec, crop = self._process_detection(pano, det, i)
+            if rec is None or not self.storage.save(rec):
+                continue
+            # Файл пишем ТОЛЬКО после того, как запись принята: иначе на диск
+            # ложится кроп каждого кандидата, включая отсеянных дедупом —
+            # на тестовой панораме это 24 файла при 5 записях.
+            crop.save(rec.crop_image_path, quality=92)
+            saved.append(rec)
         if len(dets) > self.max_candidates:
             log.info("панорама %s: разобрано %d кандидатов из %d (потолок разбора)",
                      pid, self.max_candidates, len(dets))
@@ -86,7 +93,9 @@ class Pipeline:
         return saved
 
     def _process_detection(self, pano: Panorama, det: Detection,
-                           idx: int) -> Optional[BannerRecord]:
+                           idx: int) -> tuple[Optional[BannerRecord], Optional[Image.Image]]:
+        """Возвращает (запись, кроп). Файл не пишет — это делает вызывающий
+        после того, как запись прошла дедуп."""
         runlog.set_stage(f"кроп {pano.ref.panoid[:16]}")
         crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=0.0)
 
@@ -95,7 +104,7 @@ class Pipeline:
             vr = self.verifier.verify(crop)
             if not vr.is_ad:
                 log.info("отклонён (не реклама): %s [%s]", pano.ref.panoid, vr.reason)
-                return None
+                return None, None
 
         # OCR только для прошедших проверку кропов.
         runlog.set_stage(f"OCR {pano.ref.panoid[:16]}")
@@ -108,7 +117,6 @@ class Pipeline:
         # выгрузке, несобранное уже не вернуть — фильтр переехал в export.
 
         crop_path = self.images_dir / f"{pano.ref.panoid}_{idx}.jpg"
-        crop.save(crop_path, quality=92)
         phones = extract_phones(text)
         bearing = pano.bearing_of(det)
 
@@ -129,7 +137,7 @@ class Pipeline:
             full_image_path=None,
             crop_image_path=str(crop_path),
             source_url=_yandex_url(pano.ref.lon, pano.ref.lat, bearing),
-        )
+        ), crop
 
     # ---- точка / обход ---------------------------------------------------
     def process_point(self, lon: float, lat: float) -> list[BannerRecord]:
