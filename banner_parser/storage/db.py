@@ -65,9 +65,30 @@ def _haversine_m(lon0: float, lat0: float, lon1: float, lat1: float) -> float:
     return math.hypot(dx, dy)
 
 
+def estimated_position(lon: float, lat: float, bearing_deg: float | None,
+                       assumed_distance_m: float) -> tuple[float, float]:
+    """Грубая оценка положения САМОГО щита: точка съёмки плюс луч по азимуту.
+
+    Дальность до щита из панорамы не измеряется, поэтому берём типичную —
+    щиты и ограждения стоят у дороги в нескольких десятках метров. Без этого
+    дедуп невозможен в принципе: у всех детекций с одной панорамы координаты
+    камеры одинаковы, и кластеризация по ним склеила бы разные щиты, видимые
+    с одной точки, в один объект.
+    """
+    if bearing_deg is None:
+        return lon, lat
+    a = math.radians(bearing_deg)
+    dx = assumed_distance_m * math.sin(a)          # восток
+    dy = assumed_distance_m * math.cos(a)          # север
+    dlat = dy / 111_320.0
+    dlon = dx / (111_320.0 * max(0.1, math.cos(math.radians(lat))))
+    return lon + dlon, lat + dlat
+
+
 class Storage:
-    def __init__(self, db_path: str, dedup_radius_m: float = 50.0,
-                 dedup_phone_radius_m: float = 300.0):
+    def __init__(self, db_path: str, dedup_radius_m: float = 25.0,
+                 dedup_phone_radius_m: float = 300.0,
+                 dedup_assumed_distance_m: float = 25.0):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
@@ -75,22 +96,32 @@ class Storage:
         self.conn.commit()
         self.dedup_radius_m = dedup_radius_m
         self.dedup_phone_radius_m = dedup_phone_radius_m
+        self.dedup_assumed_distance_m = dedup_assumed_distance_m
 
     # ---- дедупликация ----------------------------------------------------
     def find_duplicate(self, rec: BannerRecord):
         """Ищет уже сохранённый тот же физический щит. Возвращает строку или None.
 
-        Две болезни старого ключа лечатся здесь:
-          • один щит с соседних панорам не склеивался — округление координат до
-            ~11 м и азимута до 10° давало разные ключи. Теперь кластеризуем по
-            фактическому расстоянию между точками съёмки;
-          • разные щиты с одним телефоном схлопывались в одну запись — телефон
-            был самостоятельным ключом, и федеральная кампания с единым номером
-            убила бы базу по всей стране. Теперь телефон работает только вместе
-            с географией, зато с бо́льшим радиусом: один и тот же щит виден
-            с более далёких панорам, чем позволяет геометрический радиус.
+        Три болезни лечатся здесь:
+          • один щит с соседних панорам не склеивался — старый ключ округлял
+            координаты до ~11 м и азимут до 10°, и съёмка того же щита с точки
+            в 20 метрах давала другой ключ;
+          • разные щиты с одним телефоном схлопывались — телефон был
+            самостоятельным ключом, и федеральная кампания с единым номером
+            убила бы базу по стране. Теперь телефон работает только вместе
+            с географией, зато с бо́льшим радиусом: один щит видно и издалека;
+          • кластеризация по координатам КАМЕРЫ склеивала разные щиты, видимые
+            с одной панорамы: у них координаты совпадают точно. Поэтому
+            сравниваем оценку положения самого щита (камера + луч по азимуту).
+
+        Тема в сравнении не участвует: она приходит из OCR, часто не определена
+        и меняется от кадра к кадру — привязывать к ней тождество объекта нельзя.
         """
-        r = max(self.dedup_radius_m, self.dedup_phone_radius_m)
+        px, py = estimated_position(rec.lon, rec.lat, rec.bearing_deg,
+                                    self.dedup_assumed_distance_m)
+        # Прямоугольник поиска берём с запасом: камера может стоять дальше,
+        # чем оценка щита, поэтому прибавляем предполагаемую дальность.
+        r = max(self.dedup_radius_m, self.dedup_phone_radius_m) + self.dedup_assumed_distance_m
         dlat = r / 111_320.0
         dlon = r / (111_320.0 * max(0.1, math.cos(math.radians(rec.lat))))
         rows = self.conn.execute(
@@ -99,13 +130,15 @@ class Storage:
 
         new_phones = set(rec.phones or [])
         for row in rows:
-            d = _haversine_m(rec.lon, rec.lat, row["lon"], row["lat"])
+            qx, qy = estimated_position(row["lon"], row["lat"], row["bearing_deg"],
+                                        self.dedup_assumed_distance_m)
+            d = _haversine_m(px, py, qx, qy)
             old_phones = {p.strip() for p in (row["phones"] or "").split(",") if p.strip()}
             if new_phones and old_phones and (new_phones & old_phones):
                 if d <= self.dedup_phone_radius_m:
                     return row
                 continue          # тот же телефон, но далеко — другой щит
-            if d <= self.dedup_radius_m and row["category"] == rec.category:
+            if d <= self.dedup_radius_m:
                 return row
         return None
 
