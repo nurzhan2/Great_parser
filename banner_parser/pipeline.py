@@ -15,7 +15,7 @@ from .classify import build_classifier
 from .config import Config
 from .detect import build_detector
 from .model import BannerRecord, Detection
-from .ocr import build_ocr, extract_phones
+from .ocr import build_ocr, extract_contacts
 from .storage import Storage
 from .verify import build_verifier
 from .yandex import HttpClient, Panorama
@@ -150,7 +150,7 @@ class Pipeline:
         # выгрузке, несобранное уже не вернуть — фильтр переехал в export.
 
         crop_path = self.images_dir / f"{pano.ref.panoid}_{idx}.jpg"
-        phones = extract_phones(text)
+        contacts = extract_contacts(text)
         bearing = pano.bearing_of(det)
 
         bid = hashlib.md5(
@@ -163,7 +163,10 @@ class Pipeline:
             timestamp=pano.ref.timestamp,
             bearing_deg=bearing,
             category=category,
-            phones=phones,
+            phones=contacts.phones,
+            phones_unreliable=contacts.phones_unreliable,
+            sites=contacts.sites,
+            telegram=contacts.telegram,
             text=text,
             address=pano.ref.address,
             score=det.score,

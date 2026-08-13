@@ -71,6 +71,9 @@ class BannerRecord:
     bearing_deg: Optional[float]      # компас-азимут на баннер от точки съёмки
     category: str = "другое"
     phones: list[str] = field(default_factory=list)
+    phones_unreliable: list[str] = field(default_factory=list)
+    sites: list[str] = field(default_factory=list)
+    telegram: list[str] = field(default_factory=list)
     text: str = ""
     address: Optional[str] = None
     score: float = 1.0
@@ -80,5 +83,6 @@ class BannerRecord:
 
     def to_row(self) -> dict[str, Any]:
         d = asdict(self)
-        d["phones"] = ", ".join(self.phones)
+        for key in ("phones", "phones_unreliable", "sites", "telegram"):
+            d[key] = ", ".join(getattr(self, key))
         return d

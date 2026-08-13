@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS banners (
     bearing_deg REAL,
     category    TEXT,
     phones      TEXT,
+    phones_unreliable TEXT,
+    sites       TEXT,
+    telegram    TEXT,
     text        TEXT,
     address     TEXT,
     score       REAL,
@@ -93,10 +96,20 @@ class Storage:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
         self.dedup_radius_m = dedup_radius_m
         self.dedup_phone_radius_m = dedup_phone_radius_m
         self.dedup_assumed_distance_m = dedup_assumed_distance_m
+
+    def _migrate(self) -> None:
+        """Добить колонки, которых нет в старых базах. CREATE TABLE IF NOT EXISTS
+        существующую таблицу не меняет, поэтому без этого записи с контактами
+        падали бы на INSERT."""
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(banners)")}
+        for col in ("phones_unreliable", "sites", "telegram"):
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE banners ADD COLUMN {col} TEXT")
 
     # ---- дедупликация ----------------------------------------------------
     def find_duplicate(self, rec: BannerRecord):
@@ -151,10 +164,11 @@ class Storage:
         self.conn.execute(
             """INSERT OR REPLACE INTO banners
                (banner_id, dedup_key, panoid, lon, lat, timestamp, bearing_deg,
-                category, phones, text, address, score, full_image_path,
-                crop_image_path, source_url)
+                category, phones, phones_unreliable, sites, telegram, text,
+                address, score, full_image_path, crop_image_path, source_url)
                VALUES (:banner_id, :dedup_key, :panoid, :lon, :lat, :timestamp,
-                :bearing_deg, :category, :phones, :text, :address, :score,
+                :bearing_deg, :category, :phones, :phones_unreliable, :sites,
+                :telegram, :text, :address, :score,
                 :full_image_path, :crop_image_path, :source_url)""",
             {**row, "dedup_key": key},
         )

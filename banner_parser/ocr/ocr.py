@@ -1,8 +1,7 @@
-"""OCR баннера (easyocr, лениво) и извлечение телефонов из текста."""
+"""OCR баннера через easyocr (ленивая загрузка). Разбор контактов — в contacts.py."""
 from __future__ import annotations
 
 import logging
-import re
 from typing import Optional
 
 from PIL import Image
@@ -40,23 +39,6 @@ class OcrEngine:
         except Exception as e:  # noqa: BLE001
             log.warning("OCR error: %s", e)
             return ""
-
-
-# Российские телефоны: +7 / 8 / 7, затем 10 цифр с любыми разделителями.
-_PHONE_RE = re.compile(
-    r"(?:\+7|8|7)[\s\-\(\)]*\d{3}[\s\-\(\)]*\d{3}[\s\-\(\)]*\d{2}[\s\-\(\)]*\d{2}")
-
-
-def extract_phones(text: str) -> list[str]:
-    """Находит и нормализует телефоны в формат +7XXXXXXXXXX (без дублей)."""
-    found: list[str] = []
-    for m in _PHONE_RE.finditer(text or ""):
-        digits = re.sub(r"\D", "", m.group())
-        if len(digits) == 11 and digits[0] in ("7", "8"):
-            norm = "+7" + digits[1:]
-            if norm not in found:
-                found.append(norm)
-    return found
 
 
 def build_ocr(cfg) -> Optional[OcrEngine]:
