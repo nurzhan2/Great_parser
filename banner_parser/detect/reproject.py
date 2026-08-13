@@ -7,10 +7,13 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,35 +69,41 @@ def horizon_views(equi: Image.Image, n: int = 6, fov_h_deg: float = 90.0,
             for i in range(n)]
 
 
-def rectify_region(crop: Image.Image, fx0: float, fy0: float, fx1: float, fy1: float,
-                   pano_w: int, pano_h: int, margin: float = 0.06,
-                   max_side: int = 1600) -> Image.Image:
+def rectify_region(crop: Image.Image,
+                   cov: tuple[float, float, float, float],
+                   tgt: tuple[float, float, float, float],
+                   pano_w: int, pano_h: int, max_side: int = 1600) -> Image.Image:
     """Выпрямить equirect-вырезку в перспективную (неискажённую) картинку.
 
     Зачем: бокс детектора приходит из перспективного вида, а кроп режется по
-    осепараллельному прямоугольнику в equirect. Обратное отображение кривой
-    области в прямоугольник раздувает бокс и заваливает текст трапецией —
-    именно на таком кропе OCR и ломается. Здесь мы отображаем вырезку обратно
-    в перспективу, центрируя камеру на середине бокса.
+    осепараллельному прямоугольнику в equirect. Прообраз прямоугольника из
+    перспективы — кривой четырёхугольник, поэтому рамка вокруг него всегда
+    больше самого объекта, а текст заваливается трапецией. Здесь мы отображаем
+    вырезку обратно в перспективу с камерой, направленной в центр бокса.
 
-    crop покрывает панораму в долях [fx0..fx1] x [fy0..fy1]; pano_w/pano_h —
-    размеры ПОЛНОЙ панорамы того же зума (нужны для вертикального охвата).
+    cov — что вырезка ПОКРЫВАЕТ (fx0, fy0, fx1, fy1), обычно бокс с отступом;
+    tgt — что нужно ПОКАЗАТЬ (сам бокс). Они разные: перспективный вид по краям
+    «распухает» (пиксели угла смотрят под большим углом, чем центр стороны), и
+    без запаса по краям вылезали бы чёрные углы.
     """
     cw, ch = crop.size
     if cw < 8 or ch < 8:
         return crop
+    cfx0, cfy0, cfx1, cfy1 = cov
+    tfx0, tfy0, tfx1, tfy1 = tgt
     vfov = 2.0 * np.pi * pano_h / pano_w        # вертикальный охват панорамы, рад
 
-    # Угловые границы бокса и центр камеры.
-    a0, a1 = fx0 * 2.0 * np.pi, fx1 * 2.0 * np.pi
-    e0, e1 = (0.5 - fy1) * vfov, (0.5 - fy0) * vfov
-    da, de = (a1 - a0) * (1.0 + 2 * margin), (e1 - e0) * (1.0 + 2 * margin)
-    if da <= 0 or de <= 0:
+    da = (tfx1 - tfx0) * 2.0 * np.pi
+    de = (tfy1 - tfy0) * vfov
+    if da <= 0 or de <= 0 or (cfx1 - cfx0) <= 0 or (cfy1 - cfy0) <= 0:
         return crop
     da = min(da, np.radians(120.0))             # шире 120° перспектива вырождается
-    ac, ec = (a0 + a1) / 2.0, (e0 + e1) / 2.0
+    ac = (tfx0 + tfx1) / 2.0 * 2.0 * np.pi
+    # ВНИМАНИЕ на знак: в equirect_to_perspective вектор строится как [x, -y, z],
+    # поэтому положительный угол Rx — наклон ВНИЗ. Центр бокса ниже середины
+    # панорамы (fy > 0.5) означает положительный наклон.
+    ec = ((tfy0 + tfy1) / 2.0 - 0.5) * vfov
 
-    # Размер выхода: сохраняем разрешение исходной вырезки, но не раздуваем.
     ow = int(min(max_side, max(32, cw)))
     oh = int(min(max_side, max(32, round(ow * (de / da)))))
 
@@ -105,7 +114,6 @@ def rectify_region(crop: Image.Image, fx0: float, fy0: float, fx1: float, fy1: f
     vec = np.stack([xx, -yy, np.full_like(xx, f)], axis=-1)
     vec /= np.linalg.norm(vec, axis=-1, keepdims=True)
 
-    # Поворот на центр бокса: сначала подъём (pitch), затем азимут (yaw).
     cp, sp = np.cos(ec), np.sin(ec)
     Rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
     cy, sy = np.cos(ac), np.sin(ac)
@@ -117,18 +125,22 @@ def rectify_region(crop: Image.Image, fx0: float, fy0: float, fx1: float, fy1: f
     fx = (A / (2 * np.pi)) % 1.0
     fy = 0.5 - E / vfov
 
-    # Панорама замкнута по кругу: разворачиваем fx в окрестность бокса.
-    fx = np.where(fx - fx0 > 0.5, fx - 1.0, fx)
-    fx = np.where(fx0 - fx > 0.5, fx + 1.0, fx)
+    # Панорама замкнута по кругу: разворачиваем fx в окрестность вырезки.
+    fx = np.where(fx - cfx0 > 0.5, fx - 1.0, fx)
+    fx = np.where(cfx0 - fx > 0.5, fx + 1.0, fx)
 
-    # Доли панорамы -> пиксели вырезки.
-    sx = (fx - fx0) / max(1e-9, fx1 - fx0) * (cw - 1)
-    sy = (fy - fy0) / max(1e-9, fy1 - fy0) * (ch - 1)
-    valid = (sx >= 0) & (sx <= cw - 1) & (sy >= 0) & (sy <= ch - 1)
+    sx = (fx - cfx0) / (cfx1 - cfx0) * (cw - 1)
+    sy = (fy - cfy0) / (cfy1 - cfy0) * (ch - 1)
+    inside = float(((sx >= 0) & (sx <= cw - 1) & (sy >= 0) & (sy <= ch - 1)).mean())
     sx = np.clip(sx, 0, cw - 1).astype(np.int64)
     sy = np.clip(sy, 0, ch - 1).astype(np.int64)
 
     src = np.asarray(crop.convert("RGB"))
-    out = src[sy, sx]
-    out[~valid] = 0
-    return Image.fromarray(out)
+    out = Image.fromarray(src[sy, sx])
+    if inside < 0.98:
+        # Данных не хватило по краям — лучше отдать исходную вырезку, чем
+        # картинку с растянутыми краевыми пикселями.
+        log.debug("выпрямление: покрыто %.1f%% кадра — возвращаем исходный кроп",
+                  inside * 100)
+        return crop
+    return out

@@ -111,7 +111,7 @@ class Pipeline:
         после того, как запись прошла дедуп."""
         runlog.set_stage(f"кроп {pano.ref.panoid[:16]}")
         # Размер считаем до скачивания тайлов — непригодные отсеиваем бесплатно.
-        w, h = pano.crop_size_px(det, zoom=self.crop_zoom, pad=self.crop_pad)
+        w, h = pano.crop_size_px(det, zoom=self.crop_zoom, pad=0.0)
         if min(w, h) < self.min_crop_side or w * h < self.min_crop_area:
             log.info("отброшен (кроп мелкий %dx%d): %s", w, h, pano.ref.panoid)
             return None, None
@@ -119,15 +119,18 @@ class Pipeline:
             log.info("отброшен (кроп огромный %dx%d — похоже на забор/стену "
                      "во весь кадр, а не щит): %s", w, h, pano.ref.panoid)
             return None, None
-        crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=self.crop_pad)
+        # Отступ считаем от размера БОКСА, а не панорамы: доля панорамы здесь
+        # бессмысленна — 3% от 17664 px это +530 px с каждой стороны.
+        px, py = (det.fx1 - det.fx0) * self.crop_pad, (det.fy1 - det.fy0) * self.crop_pad
+        bx0, by0 = max(0.0, det.fx0 - px), max(0.0, det.fy0 - py)
+        bx1, by1 = min(1.0, det.fx1 + px), min(1.0, det.fy1 + py)
+        crop = pano.crop_region(bx0, by0, bx1, by1, zoom=self.crop_zoom, pad=0.0)
         if self.rectify:
             from .detect.reproject import rectify_region
             zl = pano.ref.zoom(self.crop_zoom)
-            crop = rectify_region(
-                crop,
-                max(0.0, det.fx0 - self.crop_pad), max(0.0, det.fy0 - self.crop_pad),
-                min(1.0, det.fx1 + self.crop_pad), min(1.0, det.fy1 + self.crop_pad),
-                zl.width, zl.height)
+            crop = rectify_region(crop, (bx0, by0, bx1, by1),
+                                  (det.fx0, det.fy0, det.fx1, det.fy1),
+                                  zl.width, zl.height)
 
         # Сначала дешёвая проверка «это реклама» — до OCR.
         if self.verifier is not None:
