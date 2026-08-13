@@ -31,15 +31,22 @@ LOG_DIR="$PROJECT_DIR/logs"
 LOG="$LOG_DIR/crawl_$TS.log"
 LOCK="$PROJECT_DIR/logs/crawl.lock"
 
-mkdir -p "$LOG_DIR" 2>/dev/null
-
-# Пишем и на экран, и в лог: если упадёт сам wrapper, причина всё равно в файле.
-say() { printf '%s WRAPPER %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
+# Пишем и на экран, и в лог. До создания каталога логов пишем только на экран:
+# иначе mkdir -p сам создаст неверный путь, и проверка каталога проекта ниже
+# пройдёт «успешно» на пустом месте.
+say() {
+    local line
+    line="$(date '+%Y-%m-%d %H:%M:%S') WRAPPER $*"
+    if [ -d "$LOG_DIR" ]; then printf '%s\n' "$line" | tee -a "$LOG"; else printf '%s\n' "$line"; fi
+}
 die() { say "ФАТАЛЬНО: $*"; exit 2; }
 
 say "=== запуск обхода ==="
 say "каталог проекта : $PROJECT_DIR"
-cd "$PROJECT_DIR" || die "каталог $PROJECT_DIR недоступен"
+[ -d "$PROJECT_DIR" ] || die "каталога проекта не существует: $PROJECT_DIR"
+cd "$PROJECT_DIR" || die "каталог $PROJECT_DIR недоступен (нет прав?)"
+# Каталог проекта подтверждён — только теперь заводим логи.
+mkdir -p "$LOG_DIR" || die "не удалось создать каталог логов $LOG_DIR"
 
 # --- python -----------------------------------------------------------------
 PY="$(command -v python3 || true)"
