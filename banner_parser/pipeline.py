@@ -32,7 +32,10 @@ class Pipeline:
         self.verifier = build_verifier(cfg)
         self.ocr = build_ocr(cfg)
         self.classifier = build_classifier(cfg)
-        self.storage = Storage(cfg.get("storage.db_path", "data/banners.sqlite"))
+        self.storage = Storage(
+            cfg.get("storage.db_path", "data/banners.sqlite"),
+            dedup_radius_m=cfg.get("dedup.radius_m", 50.0),
+            dedup_phone_radius_m=cfg.get("dedup.phone_radius_m", 300.0))
         self.images_dir = Path(cfg.get("storage.images_dir", "data/images"))
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.overview_zoom = cfg.get("panorama.overview_zoom", 2)

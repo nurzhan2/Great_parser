@@ -1,6 +1,7 @@
 """SQLite-хранилище баннеров с дедупликацией одного щита из разных панорам."""
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
 from typing import Iterator
@@ -27,6 +28,8 @@ CREATE TABLE IF NOT EXISTS banners (
 );
 CREATE INDEX IF NOT EXISTS idx_dedup ON banners(dedup_key);
 CREATE INDEX IF NOT EXISTS idx_category ON banners(category);
+-- Дедуп ищет соседей по координатам — без индекса это скан всей таблицы.
+CREATE INDEX IF NOT EXISTS idx_geo ON banners(lat, lon);
 
 -- Состояние обхода для резюмируемости (переживает остановку/сбой).
 CREATE TABLE IF NOT EXISTS crawl_frontier (
@@ -48,26 +51,68 @@ CREATE TABLE IF NOT EXISTS crawl_cells (
 
 
 def dedup_key(rec: BannerRecord) -> str:
-    """Ключ дедупа: по телефонам (надёжнее всего), иначе по гео+азимуту."""
-    if rec.phones:
-        return "ph:" + "|".join(sorted(rec.phones))
+    """Грубый ключ — только для человека в таблице. Решение о дубликате
+    принимает Storage.find_duplicate(): ключ по округлению склеивал разные
+    щиты и не склеивал один и тот же с соседних панорам."""
     b = round((rec.bearing_deg or 0) / 10) * 10
     return f"geo:{round(rec.lon, 4)}:{round(rec.lat, 4)}:{b}:{rec.category}"
 
 
+def _haversine_m(lon0: float, lat0: float, lon1: float, lat1: float) -> float:
+    mlat = math.radians((lat0 + lat1) / 2)
+    dx = (lon1 - lon0) * 111_320.0 * math.cos(mlat)
+    dy = (lat1 - lat0) * 111_320.0
+    return math.hypot(dx, dy)
+
+
 class Storage:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, dedup_radius_m: float = 50.0,
+                 dedup_phone_radius_m: float = 300.0):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
+        self.dedup_radius_m = dedup_radius_m
+        self.dedup_phone_radius_m = dedup_phone_radius_m
+
+    # ---- дедупликация ----------------------------------------------------
+    def find_duplicate(self, rec: BannerRecord):
+        """Ищет уже сохранённый тот же физический щит. Возвращает строку или None.
+
+        Две болезни старого ключа лечатся здесь:
+          • один щит с соседних панорам не склеивался — округление координат до
+            ~11 м и азимута до 10° давало разные ключи. Теперь кластеризуем по
+            фактическому расстоянию между точками съёмки;
+          • разные щиты с одним телефоном схлопывались в одну запись — телефон
+            был самостоятельным ключом, и федеральная кампания с единым номером
+            убила бы базу по всей стране. Теперь телефон работает только вместе
+            с географией, зато с бо́льшим радиусом: один и тот же щит виден
+            с более далёких панорам, чем позволяет геометрический радиус.
+        """
+        r = max(self.dedup_radius_m, self.dedup_phone_radius_m)
+        dlat = r / 111_320.0
+        dlon = r / (111_320.0 * max(0.1, math.cos(math.radians(rec.lat))))
+        rows = self.conn.execute(
+            "SELECT * FROM banners WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+            (rec.lat - dlat, rec.lat + dlat, rec.lon - dlon, rec.lon + dlon)).fetchall()
+
+        new_phones = set(rec.phones or [])
+        for row in rows:
+            d = _haversine_m(rec.lon, rec.lat, row["lon"], row["lat"])
+            old_phones = {p.strip() for p in (row["phones"] or "").split(",") if p.strip()}
+            if new_phones and old_phones and (new_phones & old_phones):
+                if d <= self.dedup_phone_radius_m:
+                    return row
+                continue          # тот же телефон, но далеко — другой щит
+            if d <= self.dedup_radius_m and row["category"] == rec.category:
+                return row
+        return None
 
     def save(self, rec: BannerRecord) -> bool:
         """Вставляет запись. Возвращает False, если дубликат уже есть."""
         key = dedup_key(rec)
-        cur = self.conn.execute("SELECT 1 FROM banners WHERE dedup_key = ? LIMIT 1", (key,))
-        if cur.fetchone():
+        if self.find_duplicate(rec) is not None:
             return False
         row = rec.to_row()
         self.conn.execute(
