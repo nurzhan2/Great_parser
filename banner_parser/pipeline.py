@@ -39,6 +39,9 @@ class Pipeline:
         self.crop_zoom = cfg.get("panorama.crop_zoom", 0)
         self.workers = cfg.get("panorama.tile_workers", 16)
         self.only_category = cfg.get("filter.only_category", None)
+        self.max_per_panorama = cfg.get("detector.max_per_panorama", 10)
+        # Кандидатов на разбор больше, чем сохраняемых: часть отсеет verify.
+        self.max_candidates = cfg.get("detector.max_candidates", 30)
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
@@ -53,17 +56,31 @@ class Pipeline:
         # убивают по OOM, это происходит здесь, поэтому этап отмечен явно.
         runlog.set_stage(f"детекция {pid[:16]}")
         t0 = time.monotonic()
-        # Один баннер с панорамы: берём лучший по score, что прошёл проверку и фильтр.
+        # Разбираем по убыванию score — чтобы под потолок попали лучшие.
         dets = sorted(self.detector.detect(overview), key=lambda d: d.score, reverse=True)
         t_detect = time.monotonic() - t0
         log.info("panorama %s: %d detections (сшивка %.1f с, детекция %.1f с, rss %s)",
                  pid, len(dets), t_stitch, t_detect, runlog.rss_str())
 
-        for i, det in enumerate(dets):
+        # Раньше здесь стоял return после первой сохранённой детекции, и
+        # ограждение с десятком рекламных секций давало одну запись за визит.
+        # Теперь берём все прошедшие, но с двумя потолками: сколько кандидатов
+        # вообще разбирать (кроп+OCR — дорогие) и сколько записей сохранить.
+        saved: list[BannerRecord] = []
+        for i, det in enumerate(dets[:self.max_candidates]):
+            if len(saved) >= self.max_per_panorama:
+                log.info("панорама %s: достигнут потолок %d баннеров, "
+                         "остальные %d детекций не разбираем",
+                         pid, self.max_per_panorama, len(dets) - i)
+                break
             rec = self._process_detection(pano, det, i)
             if rec is not None and self.storage.save(rec):
-                return [rec]
-        return []
+                saved.append(rec)
+        if len(dets) > self.max_candidates:
+            log.info("панорама %s: разобрано %d кандидатов из %d (потолок разбора)",
+                     pid, self.max_candidates, len(dets))
+        log.info("панорама %s: сохранено %d баннеров", pid, len(saved))
+        return saved
 
     def _process_detection(self, pano: Panorama, det: Detection,
                            idx: int) -> Optional[BannerRecord]:
