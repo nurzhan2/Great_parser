@@ -13,3 +13,4 @@ data/
 !docs/**/*.png
 .DS_Store
 weights/
+logs/

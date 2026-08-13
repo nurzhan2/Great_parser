@@ -54,6 +54,7 @@ class HttpClient:
         return {"http": p, "https": p}
 
     def get(self, url: str, params: Optional[dict] = None) -> Optional[requests.Response]:
+        last = "неизвестно"
         for attempt in range(self.max_retries):
             self._throttle()
             try:
@@ -63,10 +64,25 @@ class HttpClient:
                 )
                 if r.status_code == 200:
                     return r
-                log.warning("HTTP %s for %s (attempt %d)", r.status_code, url, attempt + 1)
+                last = f"HTTP {r.status_code}"
+                # 429/403 — это не «сбой сети», а отказ Яндекса обслуживать нас.
+                # Раньше это тонуло в общем warning и выглядело как случайность.
+                if r.status_code in (403, 429):
+                    log.warning("HTTP %s для %s (попытка %d) — похоже на блокировку: "
+                                "увеличьте http.min_delay или задайте http.proxies",
+                                r.status_code, url.split("?")[0], attempt + 1)
+                else:
+                    log.warning("HTTP %s для %s (попытка %d)",
+                                r.status_code, url.split("?")[0], attempt + 1)
             except requests.RequestException as e:
-                log.warning("request error %s (attempt %d)", e, attempt + 1)
+                last = type(e).__name__
+                log.warning("ошибка запроса %s: %s (попытка %d)",
+                            type(e).__name__, e, attempt + 1)
             time.sleep(0.5 * (attempt + 1))
+        # Раньше здесь молча возвращался None, и выше по стеку это выглядело
+        # как «нет панорамы» — причина отказа в лог не попадала вообще.
+        log.error("все %d попытки исчерпаны (%s): %s",
+                  self.max_retries, last, url.split("?")[0])
         return None
 
 
@@ -81,12 +97,15 @@ class MetaClient:
         base.update(params)
         r = self.http.get(META_URL, params=base)
         if r is None:
-            return None
+            return None                     # причина уже записана в HttpClient.get
         try:
             j = r.json()
         except ValueError:
+            log.warning("meta-API вернул не-JSON (%d байт, начало: %.80r)",
+                        len(r.content), r.text[:80])
             return None
         if j.get("status") != "success":
+            log.debug("meta-API status=%s для %s", j.get("status"), params)
             return None
         return j.get("data")
 

@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 
+from . import runlog
 from .config import Config
 from .detect import RegionDetector
 from .export import export_xlsx
 from .geo import grid_seeds, road_seeds
 from .pipeline import Pipeline
+
+log = logging.getLogger(__name__)
 
 
 def _pipeline(args) -> Pipeline:
@@ -29,14 +33,26 @@ def cmd_demo(args) -> None:
 
 
 def cmd_crawl(args) -> None:
+    # Обход идёт часами — heartbeat нужен, чтобы после внезапной смерти
+    # процесса было видно, на каком этапе и с какой памятью он был.
+    runlog.start_heartbeat(args.heartbeat)
     p = _pipeline(args)
     total = 0
-    for r in p.crawl(args.lon, args.lat, max_panoramas=args.limit):
-        total += 1
-        print(f"  [{r.category}] {r.panoid[:16]}… тел: {r.phones or '—'}  {r.address or ''}")
-    print(f"Обход остановлен: +{total} баннеров. Всего в БД: {p.storage.count()}, "
-          f"посещено панорам: {p.storage.visited_count()}, в очереди: {p.storage.frontier_pending()}")
-    p.close()
+    try:
+        for r in p.crawl(args.lon, args.lat, max_panoramas=args.limit):
+            total += 1
+            print(f"  [{r.category}] {r.panoid[:16]}… тел: {r.phones or '—'}  "
+                  f"{r.address or ''}", flush=True)
+    finally:
+        # Итог печатаем даже при обрыве — иначе непонятно, сколько успели снять.
+        log.info("итог обхода: +%d баннеров за запуск, всего в БД %d, "
+                 "посещено панорам %d, в очереди %d",
+                 total, p.storage.count(), p.storage.visited_count(),
+                 p.storage.frontier_pending())
+        print(f"Обход остановлен: +{total} баннеров. Всего в БД: {p.storage.count()}, "
+              f"посещено панорам: {p.storage.visited_count()}, "
+              f"в очереди: {p.storage.frontier_pending()}", flush=True)
+        p.close()
 
 
 def cmd_grid(args) -> None:
@@ -76,6 +92,12 @@ def cmd_stats(args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser("banner_parser", description="Парсер наружной рекламы из Яндекс.Панорам")
     ap.add_argument("--config", default=None, help="путь к config.yaml")
+    ap.add_argument("--log", default=None, metavar="FILE",
+                    help="дублировать лог в файл (пишется с flush на каждой строке)")
+    ap.add_argument("--log-level", default="INFO",
+                    choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="уровень лога")
+    ap.add_argument("--heartbeat", type=float, default=60.0, metavar="SEC",
+                    help="период строки «жив: этап…» при обходе, 0 — выключить")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("demo", help="обработать одну точку")
@@ -111,12 +133,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-                        datefmt="%H:%M:%S")
-    for noisy in ("httpx", "urllib3", "transformers", "PIL", "filelock"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
     args = build_parser().parse_args()
-    args.func(args)
+
+    # Порядок важен: сначала лог и перехватчики, потом шапка, и только потом
+    # тяжёлые импорты внутри команд. Иначе смерть на загрузке модели
+    # не оставит в логе вообще ничего — ровно так и было раньше.
+    log_path = runlog.setup_logging(args.log, args.log_level)
+    runlog.install_crash_handlers()
+    runlog.log_startup(cfg_path=args.config, log_path=log_path)
+
+    try:
+        args.func(args)
+    except Exception:                       # noqa: BLE001 — нужен диагноз, не стектрейс в никуда
+        runlog.set_stage("аварийное завершение")
+        log.critical("=== ИСКЛЮЧЕНИЕ в команде «%s» ===", args.cmd, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

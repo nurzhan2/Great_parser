@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import runlog
 from .classify import build_classifier
 from .config import Config
 from .detect import build_detector
@@ -40,11 +42,23 @@ class Pipeline:
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
+        pid = pano.ref.panoid
         # Обзор нужен только детектору (в памяти), на диск не сохраняется.
+        runlog.set_stage(f"сшивка {pid[:16]}")
+        t0 = time.monotonic()
         overview = pano.stitch(self.overview_zoom)
+        t_stitch = time.monotonic() - t0
+
+        # Детекция — самый тяжёлый этап и по времени, и по памяти: если процесс
+        # убивают по OOM, это происходит здесь, поэтому этап отмечен явно.
+        runlog.set_stage(f"детекция {pid[:16]}")
+        t0 = time.monotonic()
         # Один баннер с панорамы: берём лучший по score, что прошёл проверку и фильтр.
         dets = sorted(self.detector.detect(overview), key=lambda d: d.score, reverse=True)
-        log.info("panorama %s: %d detections", pano.ref.panoid, len(dets))
+        t_detect = time.monotonic() - t0
+        log.info("panorama %s: %d detections (сшивка %.1f с, детекция %.1f с, rss %.0f МБ)",
+                 pid, len(dets), t_stitch, t_detect, runlog.rss_mb())
+
         for i, det in enumerate(dets):
             rec = self._process_detection(pano, det, i)
             if rec is not None and self.storage.save(rec):
@@ -53,6 +67,7 @@ class Pipeline:
 
     def _process_detection(self, pano: Panorama, det: Detection,
                            idx: int) -> Optional[BannerRecord]:
+        runlog.set_stage(f"кроп {pano.ref.panoid[:16]}")
         crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=0.0)
 
         # Сначала дешёвая проверка «это реклама» — до OCR.
@@ -63,6 +78,7 @@ class Pipeline:
                 return None
 
         # OCR только для прошедших проверку кропов.
+        runlog.set_stage(f"OCR {pano.ref.panoid[:16]}")
         text = self.ocr.read(crop) if self.ocr else ""
         category = self.classifier.classify(text, crop)
         # Фильтр по теме: сохраняем только нужную категорию (напр. недвижимость).
@@ -97,9 +113,12 @@ class Pipeline:
 
     # ---- точка / обход ---------------------------------------------------
     def process_point(self, lon: float, lat: float) -> list[BannerRecord]:
+        runlog.set_stage(f"meta-запрос точки {lon:.4f},{lat:.4f}")
         pano = load_panorama(self.meta, self.http, lon, lat, self.workers)
         if pano is None:
-            log.warning("нет панорамы в точке %f,%f", lon, lat)
+            log.warning("нет панорамы в точке %f,%f — meta-API вернул пусто "
+                        "(либо там действительно нет съёмки, либо запрос отклонён; "
+                        "выше в логе должна быть причина от HTTP-слоя)", lon, lat)
             return []
         return self.process_panorama(pano)
 
@@ -117,8 +136,18 @@ class Pipeline:
         min_dist = self.cfg.get("crawl.min_distance_m", 250)
         st = self.storage
 
+        # Состояние ДО старта: сразу видно, продолжаем мы обход или сеем заново,
+        # и не пуста ли очередь (пустая очередь = обход уже исчерпан, а не сломан).
+        log.info("обход: bbox=%s, min_distance=%s м, лимит за запуск=%s",
+                 bbox or "без рамки", min_dist, max_panoramas or "нет")
+        log.info("состояние до старта: посещено %d, в очереди %d, баннеров в БД %d",
+                 st.visited_count(), st.frontier_pending(), st.count())
+
         # Посев: если состояние пустое — начинаем со стартовой точки.
         if st.visited_count() == 0 and st.frontier_pending() == 0:
+            log.info("состояние пустое — посев от стартовой точки %f,%f",
+                     start_lon, start_lat)
+            runlog.set_stage("посев стартовой точки")
             raw = self.meta.by_coords(start_lon, start_lat)
             if raw:
                 ref = self.meta.parse(raw)
@@ -131,16 +160,36 @@ class Pipeline:
                 st.commit()
 
         processed = 0
+        meta_fails = 0          # подряд идущие отказы meta-API — признак блокировки
+        t_start = time.monotonic()
         while True:
+            runlog.set_stage("выбор следующей панорамы")
             oid = st.next_oid()
             if oid is None:
-                log.info("frontier пуст — обход завершён (%d панорам)", st.visited_count())
+                log.info("frontier пуст — обход завершён (%d панорам, %d баннеров). "
+                         "Это нормальное окончание: граф в пределах bbox исчерпан. "
+                         "Чтобы продолжить — задайте другую стартовую точку или bbox",
+                         st.visited_count(), st.count())
                 break
+            runlog.set_stage(f"meta-запрос {oid[:16]}")
             raw = self.meta.by_oid(oid)
             st.mark_oid_done(oid)
             if raw is None:
+                meta_fails += 1
+                # 30 отказов подряд — это уже не «нет данных по точке», а
+                # блокировка/сеть. Молча крутиться в этом цикле бессмысленно.
+                if meta_fails >= 30:
+                    log.error("meta-API не отвечает %d раз подряд — обход остановлен. "
+                              "Похоже на блокировку по IP или отсутствие сети; "
+                              "проверьте доступность %s и настройте http.proxies",
+                              meta_fails, "api-maps.yandex.ru")
+                    st.commit()
+                    break
+                if meta_fails % 10 == 0:
+                    log.warning("meta-API: %d отказов подряд", meta_fails)
                 st.commit()
                 continue
+            meta_fails = 0
             ref = self.meta.parse(raw)
             if st.is_visited(ref.panoid):
                 st.commit()
@@ -160,13 +209,19 @@ class Pipeline:
             st.mark_cell(f"{clat}:{clon}", ref.lon, ref.lat)
             try:
                 yield from self.process_panorama(Panorama(ref, self.http, self.workers))
-            except Exception as e:   # noqa: BLE001 — обход не должен падать на одной панораме
-                log.warning("ошибка обработки %s: %s", ref.panoid, e)
+            except Exception:        # noqa: BLE001 — обход не должен падать на одной панораме
+                # С трассировкой: раньше здесь оставалась одна строка без стека,
+                # и по логу нельзя было понять, что именно сломалось.
+                log.exception("ошибка обработки панорамы %s (%.5f,%.5f) — пропускаем",
+                              ref.panoid, ref.lon, ref.lat)
             st.commit()
             processed += 1
             if processed % 20 == 0:
-                log.info("обход: посещено %d, снято точек %d, в очереди %d, баннеров %d",
-                         st.visited_count(), processed, st.frontier_pending(), st.count())
+                rate = processed / max(1e-9, (time.monotonic() - t_start) / 60)
+                log.info("обход: посещено %d, снято точек %d (%.1f точек/мин), "
+                         "в очереди %d, баннеров %d, rss %.0f МБ",
+                         st.visited_count(), processed, rate,
+                         st.frontier_pending(), st.count(), runlog.rss_mb())
             if max_panoramas and processed >= max_panoramas:
                 log.info("достигнут лимит %d обработанных точек за запуск", max_panoramas)
                 break
