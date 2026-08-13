@@ -122,8 +122,14 @@ def main() -> None:
     model.eval()
 
     from banner_parser.detect.detector import OwlDetector
-    prompts = args.prompt or OwlDetector.DEFAULT_PROMPTS
-    print(f"промпты ({len(prompts)}): {prompts}")
+    # Повторяем боевую конфигурацию: рекламные промпты + отвлекающие классы.
+    ad_prompts = args.prompt or cfg.get("detector.prompts", OwlDetector.DEFAULT_PROMPTS)
+    neg_prompts = ([] if args.prompt else
+                   cfg.get("detector.negative_prompts", OwlDetector.DEFAULT_NEGATIVE_PROMPTS))
+    prompts = list(ad_prompts) + list(neg_prompts)
+    n_ad = len(ad_prompts)
+    print(f"рекламные промпты ({n_ad}): {ad_prompts}")
+    print(f"отвлекающие ({len(neg_prompts)}): {neg_prompts}")
     print(f"боевой порог={live_conf}, показываю от {show_conf}, фильтр темы={only_cat}\n")
 
     totals = {"детекций": 0, "выше_порога": 0, "прошло_verify": 0, "прошло_фильтр": 0}
@@ -149,6 +155,11 @@ def main() -> None:
         canvas = overview.copy()
         draw = ImageDraw.Draw(canvas)
         W, H = canvas.size
+
+        # Детекции с отвлекающей меткой в бою выбрасываются — показываем отдельно.
+        neg = [d for d in found if d["prompt"] in neg_prompts]
+        found = [d for d in found if d["prompt"] not in neg_prompts]
+        print(f"  (отброшено по отвлекающим классам: {len(neg)})")
 
         for i, d in enumerate(found[:12]):
             det, score = d["det"], d["score"]
