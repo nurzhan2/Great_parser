@@ -8,6 +8,11 @@ from PIL import Image
 
 log = logging.getLogger(__name__)
 
+# Тема неизвестна: OCR ничего не дал. Отличается от «другое» — там текст
+# распознан, но ни одна тема не подошла.
+UNKNOWN_CATEGORY = "не определено"
+MIN_TEXT_LEN = 4
+
 # Ключевые слова по категориям (нижний регистр, по подстроке).
 KEYWORDS: dict[str, list[str]] = {
     "недвижимость": ["жк ", "жилой комплекс", "квартир", "новостро", "застройщик",
@@ -41,7 +46,12 @@ class KeywordClassifier(Classifier):
         self.categories = categories
 
     def classify(self, text: str, image: Optional[Image.Image] = None) -> str:
-        low = (text or "").lower()
+        low = (text or "").strip().lower()
+        # Пустой/мусорный OCR — это НЕ «тема другое». Раньше такой баннер
+        # получал «другое» и выбрасывался фильтром темы, хотя про его тему
+        # мы просто ничего не знаем. Теперь честное «не определено».
+        if len(low) < MIN_TEXT_LEN:
+            return UNKNOWN_CATEGORY
         best, best_hits = "другое", 0
         for cat, words in KEYWORDS.items():
             hits = sum(1 for w in words if w in low)

@@ -41,7 +41,6 @@ class Pipeline:
         self.overview_zoom = cfg.get("panorama.overview_zoom", 2)
         self.crop_zoom = cfg.get("panorama.crop_zoom", 0)
         self.workers = cfg.get("panorama.tile_workers", 16)
-        self.only_category = cfg.get("filter.only_category", None)
         self.max_per_panorama = cfg.get("detector.max_per_panorama", 10)
         # Кандидатов на разбор больше, чем сохраняемых: часть отсеет verify.
         self.max_candidates = cfg.get("detector.max_candidates", 30)
@@ -101,11 +100,11 @@ class Pipeline:
         runlog.set_stage(f"OCR {pano.ref.panoid[:16]}")
         text = self.ocr.read(crop) if self.ocr else ""
         category = self.classifier.classify(text, crop)
-        # Фильтр по теме: сохраняем только нужную категорию (напр. недвижимость).
-        if self.only_category and category != self.only_category:
-            log.info("пропущен (тема '%s' != '%s'): %s",
-                     category, self.only_category, pano.ref.panoid)
-            return None
+        # Фильтра по теме здесь БОЛЬШЕ НЕТ. «Это реклама» решает детекция и
+        # verify, «это недвижимость» — тема по тексту; смешивать их нельзя:
+        # баннер с нечитаемым OCR терял тему и выбрасывался (5 из 8 кандидатов
+        # на замеренной панораме). Собранное всегда можно отфильтровать при
+        # выгрузке, несобранное уже не вернуть — фильтр переехал в export.
 
         crop_path = self.images_dir / f"{pano.ref.panoid}_{idx}.jpg"
         crop.save(crop_path, quality=92)

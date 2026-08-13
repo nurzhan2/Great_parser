@@ -72,8 +72,17 @@ def cmd_export(args) -> None:
     from .storage import Storage
     st = Storage(cfg.get("storage.db_path", "data/banners.sqlite"))
     out = args.out or cfg.get("export.xlsx_path", "data/banners.xlsx")
-    n = export_xlsx(st, out, category=args.category)
-    print(f"Выгружено строк: {n} → {out}")
+    # Фильтр темы применяется ЗДЕСЬ, а не при сборе: собранное можно
+    # отфильтровать, несобранное — уже нет. Приоритет: --all > --category > конфиг.
+    category = None if args.all else (args.category
+                                      or cfg.get("filter.only_category", None))
+    total = st.count()
+    n = export_xlsx(st, out, category=category)
+    log.info("выгрузка: %d строк из %d в БД (фильтр темы: %s)",
+             n, total, category or "нет")
+    print(f"Выгружено строк: {n} из {total} в БД → {out}")
+    if category and n < total:
+        print(f"  (отфильтровано по теме '{category}'; --all выгрузит всё)")
     st.close()
 
 
@@ -142,7 +151,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser("export", parents=[common], help="выгрузка БД в Excel")
     e.add_argument("--out", default=None)
-    e.add_argument("--category", default=None, help="фильтр по теме")
+    e.add_argument("--category", default=None,
+                   help="фильтр по теме (по умолчанию — filter.only_category из конфига)")
+    e.add_argument("--all", action="store_true",
+                   help="выгрузить всё, игнорируя filter.only_category")
     e.set_defaults(func=cmd_export)
 
     s = sub.add_parser("stats", parents=[common], help="статистика по БД")
