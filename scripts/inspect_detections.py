@@ -76,12 +76,17 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None)
     ap.add_argument("--oid", action="append", default=[], help="конкретные oid панорам")
+    ap.add_argument("--point", action="append", nargs=2, type=float, default=[],
+                    metavar=("LON", "LAT"), help="панорама по координатам (можно несколько)")
     ap.add_argument("--sample", type=int, default=0, help="взять N пройденных панорам из БД")
     ap.add_argument("--offset", type=int, default=0, help="смещение выборки")
     ap.add_argument("--conf", type=float, default=None, help="порог показа (ниже боевого — видно пропуски)")
     ap.add_argument("--prompt", action="append", default=[], help="свой набор промптов")
     ap.add_argument("--out", default="/tmp/inspect", help="куда класть размеченные панорамы")
     ap.add_argument("--ocr", action="store_true", help="гонять OCR (медленно, но показывает текст)")
+    ap.add_argument("--full-crop", action="store_true",
+                    help="кроп в макс.зуме, как в бою (докачивает тайлы). Без него OCR "
+                         "работает по обзорной картинке и врёт в худшую сторону")
     args = ap.parse_args()
 
     cfg = Config.load(args.config)
@@ -95,12 +100,14 @@ def main() -> None:
     classifier = build_classifier(cfg)
     ocr = build_ocr(cfg) if args.ocr else None
 
-    oids = list(args.oid)
+    sources: list[tuple[str, object]] = [("oid", o) for o in args.oid]
+    sources += [("point", tuple(p)) for p in args.point]
     if args.sample:
-        oids += pick_oids(cfg.get("storage.db_path", "data/banners.sqlite"),
-                          args.sample, args.offset)
-    if not oids:
-        ap.error("укажите --oid или --sample")
+        sources += [("oid", o) for o in
+                    pick_oids(cfg.get("storage.db_path", "data/banners.sqlite"),
+                              args.sample, args.offset)]
+    if not sources:
+        ap.error("укажите --oid, --point или --sample")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -121,10 +128,13 @@ def main() -> None:
 
     totals = {"детекций": 0, "выше_порога": 0, "прошло_verify": 0, "прошло_фильтр": 0}
 
-    for oid in oids:
-        raw = meta.by_oid(oid)
+    for kind, src in sources:
+        if kind == "oid":
+            raw, tag = meta.by_oid(src), str(src)[:20]
+        else:
+            raw, tag = meta.by_coords(src[0], src[1]), f"{src[0]},{src[1]}"
         if raw is None:
-            print(f"[{oid[:20]}] meta не отдала данные — пропуск")
+            print(f"[{tag}] meta не отдала данные — пропуск")
             continue
         ref = meta.parse(raw)
         pano = Panorama(ref, http, cfg.get("panorama.tile_workers", 16))
@@ -154,7 +164,13 @@ def main() -> None:
                 verdict.append(f"НИЖЕ ПОРОГА ({score:.3f}<{live_conf})")
             else:
                 totals["выше_порога"] += 1
-                crop = overview.crop((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+                if args.full_crop:
+                    # Ровно то, что делает пайплайн: докачиваем регион в макс.зуме.
+                    crop = pano.crop_detection(det, zoom=cfg.get("panorama.crop_zoom", 0),
+                                               pad=0.0)
+                else:
+                    crop = overview.crop((int(box[0]), int(box[1]),
+                                          int(box[2]), int(box[3])))
                 vr = verifier.verify(crop) if verifier else None
                 if vr is not None and not vr.is_ad:
                     verdict.append(f"ОТСЕЯН verify [{vr.reason}]")
