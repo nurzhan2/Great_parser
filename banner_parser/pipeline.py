@@ -56,8 +56,8 @@ class Pipeline:
         # Один баннер с панорамы: берём лучший по score, что прошёл проверку и фильтр.
         dets = sorted(self.detector.detect(overview), key=lambda d: d.score, reverse=True)
         t_detect = time.monotonic() - t0
-        log.info("panorama %s: %d detections (сшивка %.1f с, детекция %.1f с, rss %.0f МБ)",
-                 pid, len(dets), t_stitch, t_detect, runlog.rss_mb())
+        log.info("panorama %s: %d detections (сшивка %.1f с, детекция %.1f с, rss %s)",
+                 pid, len(dets), t_stitch, t_detect, runlog.rss_str())
 
         for i, det in enumerate(dets):
             rec = self._process_detection(pano, det, i)
@@ -219,9 +219,9 @@ class Pipeline:
             if processed % 20 == 0:
                 rate = processed / max(1e-9, (time.monotonic() - t_start) / 60)
                 log.info("обход: посещено %d, снято точек %d (%.1f точек/мин), "
-                         "в очереди %d, баннеров %d, rss %.0f МБ",
+                         "в очереди %d, баннеров %d, rss %s",
                          st.visited_count(), processed, rate,
-                         st.frontier_pending(), st.count(), runlog.rss_mb())
+                         st.frontier_pending(), st.count(), runlog.rss_str())
             if max_panoramas and processed >= max_panoramas:
                 log.info("достигнут лимит %d обработанных точек за запуск", max_panoramas)
                 break

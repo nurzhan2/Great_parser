@@ -70,6 +70,18 @@ def peak_rss_mb() -> float:
         return 0.0
 
 
+def rss_str() -> str:
+    """RSS для лога. На Windows метрика недоступна — печатать 0 МБ было бы
+    враньём, поэтому честное «n/d»."""
+    v = rss_mb()
+    return f"{v:.0f} МБ" if v > 0 else "n/d"
+
+
+def peak_rss_str() -> str:
+    v = peak_rss_mb()
+    return f"{v:.0f} МБ" if v > 0 else "n/d"
+
+
 def _mem_available_mb() -> Optional[float]:
     try:
         with open("/proc/meminfo", "r") as f:
@@ -170,7 +182,9 @@ def log_startup(argv: Optional[list[str]] = None, cfg_path: Optional[str] = None
              f"{avail/1024:.1f} ГБ" if avail is not None else "?")
 
     # Предупреждаем заранее: это ровно те грабли, на которых уже падали.
-    if not os.environ.get("YOLO_CONFIG_DIR"):
+    # Предупреждаем только если ultralytics реально стоит — иначе это ложная
+    # тревога: без пакета переменная ни на что не влияет.
+    if not os.environ.get("YOLO_CONFIG_DIR") and _pkg_version("ultralytics") != "нет":
         log.warning("YOLO_CONFIG_DIR не задан — ultralytics попробует писать в "
                     "~/.config/Ultralytics; если он недоступен на запись, будет "
                     "ошибка. Ставьте YOLO_CONFIG_DIR=/tmp/Ultralytics")
@@ -209,8 +223,8 @@ def start_heartbeat(interval: float = 60.0) -> None:
     def _beat() -> None:
         while not _HEARTBEAT_STOP.wait(interval):
             stage, held = current_stage()
-            log.info("жив: этап=%s (%.0f с), rss=%.0f МБ, работает %.0f мин",
-                     stage, held, rss_mb(), (time.monotonic() - _START) / 60)
+            log.info("жив: этап=%s (%.0f с), rss=%s, работает %.0f мин",
+                     stage, held, rss_str(), (time.monotonic() - _START) / 60)
 
     _HEARTBEAT = threading.Thread(target=_beat, name="heartbeat", daemon=True)
     _HEARTBEAT.start()
@@ -235,8 +249,8 @@ def _on_signal(signum: int, _frame) -> None:
     stage, held = current_stage()
     log.error("=== СИГНАЛ %s (%d): %s ===", name, signum,
               _SIGNAL_HINTS.get(name, "внешняя остановка"))
-    log.error("оборван на этапе «%s» (%.0f с), rss=%.0f МБ, всего работал %.0f мин",
-              stage, held, rss_mb(), (time.monotonic() - _START) / 60)
+    log.error("оборван на этапе «%s» (%.0f с), rss=%s, всего работал %.0f мин",
+              stage, held, rss_str(), (time.monotonic() - _START) / 60)
     _FINISHED = True
     stop_heartbeat()
     # Именно sys.exit, а не os._exit: SystemExit разматывает стек, поэтому
@@ -253,8 +267,8 @@ def _on_exception(exc_type, exc, tb) -> None:
         stop_heartbeat()
         return
     stage, held = current_stage()
-    log.critical("=== ИСКЛЮЧЕНИЕ на этапе «%s» (%.0f с), rss=%.0f МБ ===",
-                 stage, held, rss_mb(), exc_info=(exc_type, exc, tb))
+    log.critical("=== ИСКЛЮЧЕНИЕ на этапе «%s» (%.0f с), rss=%s ===",
+                 stage, held, rss_str(), exc_info=(exc_type, exc, tb))
     _FINISHED = True
 
 
@@ -262,8 +276,8 @@ def _on_exit() -> None:
     if _FINISHED:
         return
     stop_heartbeat()
-    log.info("=== ЗАВЕРШЕНО: работал %.1f мин, пик памяти %.0f МБ, последний этап «%s» ===",
-             (time.monotonic() - _START) / 60, peak_rss_mb(), current_stage()[0])
+    log.info("=== ЗАВЕРШЕНО: работал %.1f мин, пик памяти %s, последний этап «%s» ===",
+             (time.monotonic() - _START) / 60, peak_rss_str(), current_stage()[0])
 
 
 def install_crash_handlers() -> None:
