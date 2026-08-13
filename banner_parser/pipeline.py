@@ -55,7 +55,11 @@ class Pipeline:
         self.min_crop_side = cfg.get("detector.min_crop_side", 50)
         self.min_crop_area = cfg.get("detector.min_crop_area", 5000)
         self.max_crop_area = cfg.get("detector.max_crop_area", 800_000)
-        self.crop_pad = cfg.get("detector.crop_pad", 0.0)
+        # Отступ вокруг бокса: 0 обрезает текст по краям (видно на 77b7323c281d).
+        self.crop_pad = cfg.get("detector.crop_pad", 0.03)
+        # Выпрямление кропа в перспективу: бокс приходит из перспективного вида,
+        # а режется по прямоугольнику в equirect — отсюда трапеции и раздувание.
+        self.rectify = cfg.get("detector.rectify", True)
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
@@ -116,6 +120,14 @@ class Pipeline:
                      "во весь кадр, а не щит): %s", w, h, pano.ref.panoid)
             return None, None
         crop = pano.crop_detection(det, zoom=self.crop_zoom, pad=self.crop_pad)
+        if self.rectify:
+            from .detect.reproject import rectify_region
+            zl = pano.ref.zoom(self.crop_zoom)
+            crop = rectify_region(
+                crop,
+                max(0.0, det.fx0 - self.crop_pad), max(0.0, det.fy0 - self.crop_pad),
+                min(1.0, det.fx1 + self.crop_pad), min(1.0, det.fy1 + self.crop_pad),
+                zl.width, zl.height)
 
         # Сначала дешёвая проверка «это реклама» — до OCR.
         if self.verifier is not None:
