@@ -1,5 +1,7 @@
+# Байткод
 __pycache__/
 *.pyc
+*.pyo
 venv/
 .venv/
 data/
@@ -14,3 +16,21 @@ data/
 .DS_Store
 weights/
 logs/
+
+# Секреты и локальное окружение
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets*
+
+# Данные обхода и резервные копии — в публичный репозиторий не идут
+backups/
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Артефакты диагностики
+/tmp_inspect/
+inspect/
