@@ -89,18 +89,36 @@ def cmd_stats(args) -> None:
     st.close()
 
 
+def _common_options() -> argparse.ArgumentParser:
+    """Опции, работающие и до, и после подкоманды.
+
+    default=SUPPRESS обязателен: подкоманда парсит аргументы в отдельный
+    namespace и копирует его поверх основного, поэтому обычный default затёр бы
+    значение, заданное перед подкомандой. SUPPRESS просто не кладёт ключ.
+
+    По той же причине здесь нельзя вызывать set_defaults(): parents=[...]
+    переиспользует те же самые объекты actions, и set_defaults на главном
+    парсере подменил бы SUPPRESS у подкоманд. Значения по умолчанию
+    проставляет _apply_defaults() уже после разбора.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--config", default=argparse.SUPPRESS, help="путь к config.yaml")
+    p.add_argument("--log", default=argparse.SUPPRESS, metavar="FILE",
+                   help="дублировать лог в файл (пишется с flush на каждой строке)")
+    p.add_argument("--log-level", default=argparse.SUPPRESS,
+                   choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="уровень лога")
+    p.add_argument("--heartbeat", type=float, default=argparse.SUPPRESS, metavar="SEC",
+                   help="период строки «жив: этап…» при обходе, 0 — выключить")
+    return p
+
+
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser("banner_parser", description="Парсер наружной рекламы из Яндекс.Панорам")
-    ap.add_argument("--config", default=None, help="путь к config.yaml")
-    ap.add_argument("--log", default=None, metavar="FILE",
-                    help="дублировать лог в файл (пишется с flush на каждой строке)")
-    ap.add_argument("--log-level", default="INFO",
-                    choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="уровень лога")
-    ap.add_argument("--heartbeat", type=float, default=60.0, metavar="SEC",
-                    help="период строки «жив: этап…» при обходе, 0 — выключить")
+    common = _common_options()
+    ap = argparse.ArgumentParser("banner_parser", parents=[common],
+                                 description="Парсер наружной рекламы из Яндекс.Панорам")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    d = sub.add_parser("demo", help="обработать одну точку")
+    d = sub.add_parser("demo", parents=[common], help="обработать одну точку")
     d.add_argument("--lon", type=float, required=True)
     d.add_argument("--lat", type=float, required=True)
     d.add_argument("--region", type=float, nargs=4, action="append",
@@ -108,32 +126,43 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ручной регион баннера (можно несколько раз)")
     d.set_defaults(func=cmd_demo)
 
-    c = sub.add_parser("crawl", help="резюмируемый обход графа от точки (в пределах bbox)")
+    c = sub.add_parser("crawl", parents=[common], help="резюмируемый обход графа от точки (в пределах bbox)")
     c.add_argument("--lon", type=float, required=True)
     c.add_argument("--lat", type=float, required=True)
     c.add_argument("--limit", type=int, default=None,
                    help="макс. панорам за запуск (по умолчанию — без лимита)")
     c.set_defaults(func=cmd_crawl)
 
-    g = sub.add_parser("grid", help="обход bbox по сетке/дорогам")
+    g = sub.add_parser("grid", parents=[common], help="обход bbox по сетке/дорогам")
     g.add_argument("--bbox", type=float, nargs=4, required=True,
                    metavar=("MIN_LON", "MIN_LAT", "MAX_LON", "MAX_LAT"))
     g.add_argument("--step", type=float, default=150.0, help="шаг seed-точек, м")
     g.add_argument("--road", action="store_true", help="сажать точки на дороги (osmnx)")
     g.set_defaults(func=cmd_grid)
 
-    e = sub.add_parser("export", help="выгрузка БД в Excel")
+    e = sub.add_parser("export", parents=[common], help="выгрузка БД в Excel")
     e.add_argument("--out", default=None)
     e.add_argument("--category", default=None, help="фильтр по теме")
     e.set_defaults(func=cmd_export)
 
-    s = sub.add_parser("stats", help="статистика по БД")
+    s = sub.add_parser("stats", parents=[common], help="статистика по БД")
     s.set_defaults(func=cmd_stats)
     return ap
 
 
+_DEFAULTS = {"config": None, "log": None, "log_level": "INFO", "heartbeat": 60.0}
+
+
+def _apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Проставить общие опции, которых нет в namespace (см. SUPPRESS выше)."""
+    for key, value in _DEFAULTS.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    return args
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    args = _apply_defaults(build_parser().parse_args())
 
     # Порядок важен: сначала лог и перехватчики, потом шапка, и только потом
     # тяжёлые импорты внутри команд. Иначе смерть на загрузке модели
