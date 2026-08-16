@@ -220,16 +220,18 @@ _VLM_PROMPT = (
 )
 
 
-class VlmBackend(OcrBackend):
-    """Распознавание через vision-модель. Даёт разом текст, рекламодателя и тему.
+class CloudVlmBackend(OcrBackend):
+    """Общая механика облачных vision-движков: кодирование картинки, ретраи с
+    ростом паузы, разбор JSON и правило «неустранимое не повторяем».
 
-    Ключ берётся ТОЛЬКО из окружения (ANTHROPIC_API_KEY) — в конфиг и git он
-    не попадает. Отказ API не роняет обход: запись помечается failed и идёт
-    дальше, а не обрывает весь прогон.
+    Наследники реализуют только _call() — сам запрос к своему API. Промпт,
+    парсер и политика ошибок общие: промпт v3 единственный, что убрал
+    выдуманные телефоны, и расходиться между провайдерами он не должен.
     """
-    name = "vlm-" + VLM_PROMPT_VERSION
+    name = "cloud"
+    env_key = ""
 
-    def __init__(self, model: str = "claude-sonnet-4-6", max_side: int = 1024,
+    def __init__(self, model: str, max_side: int = 1024,
                  max_retries: int = 4, timeout: float = 60.0):
         self.model = model
         self.max_side = max_side
@@ -238,20 +240,26 @@ class VlmBackend(OcrBackend):
         self._client = None
         self._dead = False
 
+    def _make_client(self, key: str):
+        raise NotImplementedError
+
+    def _call(self, client, data_b64: str) -> tuple[str, dict]:
+        """Вернуть (сырой текст ответа, usage)."""
+        raise NotImplementedError
+
     def _load(self):
         if self._client is None and not self._dead:
-            key = os.environ.get("ANTHROPIC_API_KEY")
+            key = os.environ.get(self.env_key)
             if not key:
-                log.error("VLM-движок выбран, но ANTHROPIC_API_KEY не задан — "
-                          "распознавание отключено. Ключ берётся только из "
-                          "окружения и в конфиг не кладётся")
+                log.error("движок %s выбран, но %s не задан — распознавание "
+                          "отключено. Ключ берётся только из окружения",
+                          self.name, self.env_key)
                 self._dead = True
                 return None
             try:
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=key, timeout=self.timeout)
+                self._client = self._make_client(key)
             except Exception as e:               # noqa: BLE001
-                log.error("SDK anthropic недоступен (%s)", e)
+                log.error("SDK для %s недоступен (%s)", self.name, e)
                 self._dead = True
         return self._client
 
@@ -274,44 +282,85 @@ class VlmBackend(OcrBackend):
         delay = 1.0
         for attempt in range(1, self.max_retries + 1):
             try:
-                msg = client.messages.create(
-                    model=self.model,
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": [
-                        {"type": "image", "source": {"type": "base64",
-                                                     "media_type": "image/jpeg",
-                                                     "data": data}},
-                        {"type": "text", "text": _VLM_PROMPT},
-                    ]}],
-                )
-                raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-                usage = {"input_tokens": msg.usage.input_tokens,
-                         "output_tokens": msg.usage.output_tokens}
+                raw, usage = self._call(client, data)
                 return _parse_vlm(raw, usage, self.name)
             except Exception as e:                # noqa: BLE001
                 msg = str(e)[:160]
-                # Часть ошибок ретраить бессмысленно и вредно: нехватка средств,
-                # неверный ключ, отказ по правам не исправятся повторами, а
-                # каждый повтор — лишний вызов. Ретраим только временное:
-                # лимиты, таймауты, 5xx, сетевые обрывы.
+                # Нехватка средств, неверный ключ, отказ по правам повтором не
+                # лечатся, а каждый повтор — лишний вызов. Ретраим только
+                # временное: лимиты, таймауты, 5xx, обрывы сети.
                 code = getattr(getattr(e, "response", None), "status_code", None)
                 fatal = code in (400, 401, 403, 404) and "rate" not in msg.lower()
-                log.warning("VLM: попытка %d/%d не удалась (%s: %s)",
-                            attempt, self.max_retries, type(e).__name__, msg)
+                log.warning("%s: попытка %d/%d не удалась (%s: %s)",
+                            self.name, attempt, self.max_retries, type(e).__name__, msg)
                 if fatal:
-                    log.error("VLM: ошибка неустранима повтором (HTTP %s) — "
-                              "прекращаем попытки. Если это нехватка средств на "
-                              "счёте, пополните баланс: обход продолжится, но "
-                              "текст распознаваться не будет", code)
-                    self._dead = True     # не долбим API на каждом следующем кропе
+                    log.error("%s: ошибка неустранима повтором (HTTP %s) — "
+                              "прекращаем попытки и больше не ходим в API. "
+                              "Обход продолжится с запасным движком", self.name, code)
+                    self._dead = True
                     break
                 if attempt == self.max_retries:
                     break
                 time.sleep(delay)
                 delay *= 2
-        log.error("VLM: все %d попыток исчерпаны — запись помечена как "
-                  "нераспознанная, обход продолжается", self.max_retries)
+        log.error("%s: попытки исчерпаны — запись помечена нераспознанной", self.name)
         return OcrResult(engine=self.name, failed=True)
+
+
+class VlmBackend(CloudVlmBackend):
+    """Anthropic. Ключ — только из ANTHROPIC_API_KEY."""
+    name = "vlm-" + VLM_PROMPT_VERSION
+    env_key = "ANTHROPIC_API_KEY"
+
+    def __init__(self, model: str = "claude-sonnet-4-6", max_side: int = 1024,
+                 max_retries: int = 4, timeout: float = 60.0):
+        super().__init__(model, max_side, max_retries, timeout)
+
+    def _make_client(self, key: str):
+        import anthropic
+        return anthropic.Anthropic(api_key=key, timeout=self.timeout)
+
+    def _call(self, client, data_b64: str):
+        msg = client.messages.create(
+            model=self.model, max_tokens=1500,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": "image/jpeg",
+                                             "data": data_b64}},
+                {"type": "text", "text": _VLM_PROMPT},
+            ]}])
+        raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        return raw, {"input_tokens": msg.usage.input_tokens,
+                     "output_tokens": msg.usage.output_tokens}
+
+
+class OpenAiBackend(CloudVlmBackend):
+    """OpenAI. Промпт, парсер и политика ошибок — те же, что у Anthropic:
+    расхождение промптов между провайдерами вернуло бы выдуманные контакты.
+    Ключ — только из OPENAI_API_KEY."""
+    name = "openai-" + VLM_PROMPT_VERSION
+    env_key = "OPENAI_API_KEY"
+
+    def __init__(self, model: str = "gpt-4o-mini", max_side: int = 1024,
+                 max_retries: int = 4, timeout: float = 60.0):
+        super().__init__(model, max_side, max_retries, timeout)
+
+    def _make_client(self, key: str):
+        import openai
+        return openai.OpenAI(api_key=key, timeout=self.timeout)
+
+    def _call(self, client, data_b64: str):
+        r = client.chat.completions.create(
+            model=self.model, max_tokens=1500,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": _VLM_PROMPT},
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/jpeg;base64," + data_b64}},
+            ]}])
+        raw = r.choices[0].message.content or ""
+        u = getattr(r, "usage", None)
+        return raw, {"input_tokens": getattr(u, "prompt_tokens", 0),
+                     "output_tokens": getattr(u, "completion_tokens", 0)}
 
 
 def _parse_vlm(raw: str, usage: dict, engine: str) -> OcrResult:
@@ -349,6 +398,10 @@ def build_backend(cfg) -> OcrBackend:
     name = (cfg.get("ocr.backend", "easyocr") or "easyocr").lower()
     if name == "paddle":
         return PaddleOcrBackend(lang=cfg.get("ocr.paddle_lang", "ru"))
+    if name == "openai":
+        return OpenAiBackend(model=cfg.get("ocr.openai_model", "gpt-4o-mini"),
+                             max_side=cfg.get("ocr.vlm_max_side", 1024),
+                             max_retries=cfg.get("ocr.vlm_max_retries", 4))
     if name == "vlm":
         return VlmBackend(model=cfg.get("ocr.vlm_model", "claude-sonnet-4-6"),
                           max_side=cfg.get("ocr.vlm_max_side", 1024),

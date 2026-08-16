@@ -61,7 +61,7 @@ def build_ocr(cfg) -> Optional[OcrEngine]:
     backend = build_backend(cfg)
     fb = None
     name = (cfg.get("ocr.backend", "easyocr") or "easyocr").lower()
-    if name != "easyocr" and cfg.get("ocr.fallback_easyocr", True):
+    if name in ("vlm", "openai") and cfg.get("ocr.fallback_easyocr", True):
         fb = EasyOcrBackend(languages=cfg.get("ocr.languages", ["ru", "en"]),
                             gpu=cfg.get("ocr.gpu", False))
     log.info("OCR-движок: %s%s", backend.name,
