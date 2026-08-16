@@ -26,10 +26,19 @@ detector:
   # Без отвлекающих классов у модели нет варианта «это не реклама», и
   # рекламной меткой помечаются дорожные знаки, фонари, детские площадки
   # и таблички с адресом (замерено: точность 10% против 100% с ними).
-  prompts:
-    - "a billboard advertisement"
-    - "an advertising banner on a construction fence"
-    - "a large printed advertisement with text"
+    prompts:
+    - "a private property for sale sign"
+    - "a private property for rent sign"
+    - "a real estate sign with a phone number"
+    - "a homemade real estate advertisement"
+    - "a small property advertisement attached to a fence"
+    - "a property sale or rental sign attached to a gate"
+    - "a printed real estate banner on a fence"
+    - "a handwritten property for sale or rent sign"
+    - "a house for sale or rent sign"
+    - "a land for sale sign"
+    - "a commercial space for rent sign"
+    - "a property advertisement by owner"
   # Отвлекающие классы описывают ТОЛЬКО мусор, но не фон целевых объектов.
   # Прежний список содержал «a residential apartment building», «trees and
   # bushes» и «a wall with graffiti» — это фон баннера на ограждении, и такие
@@ -37,12 +46,16 @@ detector:
   negative_prompts:
     - "a road traffic sign"
     - "a street name or address sign"
-    - "a storefront or business sign"
+    - "a permanent storefront name sign"
+    - "a business logo sign"
     - "a government or municipal information sign"
-    - "a vehicle license plate"
     - "a public transport sign"
-    - "a street lamp post"
-    - "a parked car"
+    - "a vehicle license plate"
+    - "a commercial product billboard"
+    - "a professional real estate developer billboard"
+    - "a new housing development billboard"
+    - "a real estate agency billboard"
+    - "an event or promotional poster"
   # Margin-фильтр вместо argmax по всем запросам. Отбрасываем не то, где
   # отвлекающий класс победил на сотые доли, а только то, где он доминирует.
   # Спорное уходит дальше — ниже по конвейеру стоит OCR, он точнее.
