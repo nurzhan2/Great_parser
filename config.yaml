@@ -93,8 +93,11 @@ verify:
   backend: heuristic   # heuristic (без зависимостей) | clip (zero-shot, open-clip)
   min_edge_density: 0.025
   min_colorfulness: 18.0
-  min_saturation: 0.0
+  min_saturation: 0.12
   clip_threshold: 0.5
+  paper_min_bright_ratio: 0.45
+  paper_min_dark_ratio: 0.01
+  paper_min_contrast: 18.0
 
 ocr:
   enabled: true
