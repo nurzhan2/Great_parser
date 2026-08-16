@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 COLUMNS = [
     ("crop", "Баннер", 62),
+    ("advertiser", "Рекламодатель", 22),
     ("category", "Тема", 14),
     ("phones", "Телефоны", 20),
     ("sites", "Сайт", 22),

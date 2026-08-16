@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS banners (
     sites       TEXT,
     telegram    TEXT,
     text        TEXT,
+    advertiser  TEXT,
     address     TEXT,
     score       REAL,
     full_image_path TEXT,
@@ -107,7 +108,7 @@ class Storage:
         существующую таблицу не меняет, поэтому без этого записи с контактами
         падали бы на INSERT."""
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(banners)")}
-        for col in ("phones_unreliable", "sites", "telegram"):
+        for col in ("phones_unreliable", "sites", "telegram", "advertiser"):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE banners ADD COLUMN {col} TEXT")
 
@@ -165,10 +166,10 @@ class Storage:
             """INSERT OR REPLACE INTO banners
                (banner_id, dedup_key, panoid, lon, lat, timestamp, bearing_deg,
                 category, phones, phones_unreliable, sites, telegram, text,
-                address, score, full_image_path, crop_image_path, source_url)
+                advertiser, address, score, full_image_path, crop_image_path, source_url)
                VALUES (:banner_id, :dedup_key, :panoid, :lon, :lat, :timestamp,
                 :bearing_deg, :category, :phones, :phones_unreliable, :sites,
-                :telegram, :text, :address, :score,
+                :telegram, :text, :advertiser, :address, :score,
                 :full_image_path, :crop_image_path, :source_url)""",
             {**row, "dedup_key": key},
         )

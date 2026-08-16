@@ -1,4 +1,4 @@
-"""OCR баннера через easyocr (ленивая загрузка). Разбор контактов — в contacts.py."""
+"""Фасад OCR: выбор движка из конфига плюс кэш результатов по хэшу картинки."""
 from __future__ import annotations
 
 import logging
@@ -6,45 +6,48 @@ from typing import Optional
 
 from PIL import Image
 
+from .engines import OcrResult, ResultCache, build_backend
+
 log = logging.getLogger(__name__)
 
 
 class OcrEngine:
-    """Обёртка над easyocr. Если пакет не установлен — read() вернёт ''."""
+    """Обёртка над выбранным движком. Кэширует результаты по хэшу кропа —
+    повторный прогон тех же картинок не стоит ни времени, ни денег."""
 
-    def __init__(self, languages: Optional[list[str]] = None, gpu: bool = True):
-        self.languages = languages or ["ru", "en"]
-        self.gpu = gpu
-        self._reader = None
-        self._unavailable = False
+    def __init__(self, backend, cache_path: Optional[str] = None):
+        self.backend = backend
+        self.cache = ResultCache(cache_path) if cache_path else None
 
-    def _load(self):
-        if self._reader is None and not self._unavailable:
-            try:
-                import easyocr  # lazy
-                self._reader = easyocr.Reader(self.languages, gpu=self.gpu)
-            except Exception as e:  # noqa: BLE001
-                log.warning("easyocr недоступен (%s) — OCR-этап пропускается", e)
-                self._unavailable = True
-        return self._reader
+    def recognize(self, image: Image.Image) -> OcrResult:
+        if self.cache is not None:
+            key = ResultCache.key(image, self.backend.name)
+            hit = self.cache.get(key)
+            if hit is not None:
+                return hit
+        res = self.backend.read(image)
+        # Неудачу не кэшируем: движок мог отказать временно (сеть, лимит API).
+        if self.cache is not None and not res.failed:
+            self.cache.put(key, res)
+        return res
 
     def read(self, image: Image.Image) -> str:
-        import numpy as np
-        reader = self._load()
-        if reader is None:
-            return ""
-        try:
-            lines = reader.readtext(np.asarray(image), detail=0, paragraph=True)
-            return "\n".join(lines)
-        except Exception as e:  # noqa: BLE001
-            log.warning("OCR error: %s", e)
-            return ""
+        """Совместимость со старым интерфейсом — только текст."""
+        return self.recognize(image).text
+
+    def stats(self) -> str:
+        if self.cache is None:
+            return "кэш выключен"
+        return f"кэш: попаданий {self.cache.hits}, промахов {self.cache.misses}"
+
+    def close(self) -> None:
+        if self.cache is not None:
+            self.cache.close()
 
 
 def build_ocr(cfg) -> Optional[OcrEngine]:
     if not cfg.get("ocr.enabled", True):
         return None
-    return OcrEngine(
-        languages=cfg.get("ocr.languages", ["ru", "en"]),
-        gpu=cfg.get("ocr.gpu", True),
-    )
+    backend = build_backend(cfg)
+    log.info("OCR-движок: %s", backend.name)
+    return OcrEngine(backend, cache_path=cfg.get("ocr.cache_path", "data/ocr_cache.sqlite"))

@@ -72,9 +72,21 @@ verify:
   clip_threshold: 0.5
 
 ocr:
-  enabled: true        # требует easyocr; если не установлен — этап пропускается
+  enabled: true
+  # Движок: easyocr | paddle | vlm. Замер показал, что easyocr упирается в 31%
+  # распознанных слов и ни одна его настройка не помогает — это вопрос выбора
+  # движка, поэтому он вынесен в конфиг и переключается без правки кода.
+  backend: easyocr
   languages: ["ru", "en"]
-  gpu: true
+  gpu: false           # на сервере CPU; true даёт только предупреждение
+  paddle_lang: ru
+  # VLM даёт разом текст, рекламодателя и тему. Ключ берётся ТОЛЬКО из
+  # переменной окружения ANTHROPIC_API_KEY — в конфиг и git он не попадает.
+  vlm_model: claude-sonnet-4-6
+  vlm_max_side: 1024   # больше сторона — дороже по токенам
+  vlm_max_retries: 4
+  # Кэш результатов по хэшу кропа: повторный прогон не стоит денег и времени.
+  cache_path: "data/ocr_cache.sqlite"
 
 classify:
   # backend: keyword | clip

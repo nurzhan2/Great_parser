@@ -75,6 +75,7 @@ class BannerRecord:
     sites: list[str] = field(default_factory=list)
     telegram: list[str] = field(default_factory=list)
     text: str = ""
+    advertiser: Optional[str] = None
     address: Optional[str] = None
     score: float = 1.0
     full_image_path: Optional[str] = None   # обзорное фото панорамы

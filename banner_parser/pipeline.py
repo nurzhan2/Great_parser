@@ -141,8 +141,16 @@ class Pipeline:
 
         # OCR только для прошедших проверку кропов.
         runlog.set_stage(f"OCR {pano.ref.panoid[:16]}")
-        text = self.ocr.read(crop) if self.ocr else ""
-        category = self.classifier.classify(text, crop)
+        ocr_res = self.ocr.recognize(crop) if self.ocr else None
+        text = ocr_res.text if ocr_res else ""
+        if ocr_res is not None and ocr_res.failed:
+            log.info("текст не распознан (движок %s отказал): %s",
+                     ocr_res.engine, pano.ref.panoid)
+        # Тема от движка приоритетнее словаря: VLM видит картинку, а словарь
+        # работает по тексту, которого может не быть вовсе. Словарь — запасной.
+        category = (ocr_res.category if ocr_res and ocr_res.category
+                    else self.classifier.classify(text, crop))
+        advertiser = ocr_res.advertiser if ocr_res else None
         # Фильтра по теме здесь БОЛЬШЕ НЕТ. «Это реклама» решает детекция и
         # verify, «это недвижимость» — тема по тексту; смешивать их нельзя:
         # баннер с нечитаемым OCR терял тему и выбрасывался (5 из 8 кандидатов
@@ -168,6 +176,7 @@ class Pipeline:
             sites=contacts.sites,
             telegram=contacts.telegram,
             text=text,
+            advertiser=advertiser,
             address=pano.ref.address,
             score=det.score,
             full_image_path=None,
@@ -304,6 +313,9 @@ class Pipeline:
                 break
 
     def close(self) -> None:
+        if self.ocr is not None:
+            log.info("OCR %s", self.ocr.stats())
+            self.ocr.close()
         self.storage.close()
 
 
