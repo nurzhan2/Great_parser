@@ -289,9 +289,22 @@ class VlmBackend(OcrBackend):
                          "output_tokens": msg.usage.output_tokens}
                 return _parse_vlm(raw, usage, self.name)
             except Exception as e:                # noqa: BLE001
-                # Не роняем обход: логируем, ждём с ростом паузы, пробуем снова.
+                msg = str(e)[:160]
+                # Часть ошибок ретраить бессмысленно и вредно: нехватка средств,
+                # неверный ключ, отказ по правам не исправятся повторами, а
+                # каждый повтор — лишний вызов. Ретраим только временное:
+                # лимиты, таймауты, 5xx, сетевые обрывы.
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                fatal = code in (400, 401, 403, 404) and "rate" not in msg.lower()
                 log.warning("VLM: попытка %d/%d не удалась (%s: %s)",
-                            attempt, self.max_retries, type(e).__name__, str(e)[:120])
+                            attempt, self.max_retries, type(e).__name__, msg)
+                if fatal:
+                    log.error("VLM: ошибка неустранима повтором (HTTP %s) — "
+                              "прекращаем попытки. Если это нехватка средств на "
+                              "счёте, пополните баланс: обход продолжится, но "
+                              "текст распознаваться не будет", code)
+                    self._dead = True     # не долбим API на каждом следующем кропе
+                    break
                 if attempt == self.max_retries:
                     break
                 time.sleep(delay)
