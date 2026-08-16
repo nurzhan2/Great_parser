@@ -1,0 +1,165 @@
+# Справочник рекламодателей: алиасы для нормализации + контакты для обогащения.
+#
+# Зачем алиасы: VLM возвращает то, что написано на щите — «Wildberries», «WB»,
+# «вайлдберриз», «ВБ». Это один рекламодатель, и без приведения к каноничному
+# имени база не группируется. Замер: «День Индии» и «India Day» на соседних
+# щитах считались разными брендами.
+#
+# Зачем контакты здесь: со щита они читаются надёжно только при крупном шрифте
+# (замер: 1 верный сайт из 4 на мелком). Контакты из этого файла — совсем
+# другие по надёжности данные, поэтому в базе и в Excel они лежат в отдельных
+# колонках и НИКОГДА не смешиваются с прочитанным со щита.
+#
+# Наполнено по брендам, реально встреченным на тестовом обходе Люблинской,
+# плюс крупные федеральные рекламодатели наружки. Пополняется вручную.
+
+brands:
+  Wildberries:
+    aliases: [wildberries, wb, вайлдберриз, вб, "wb.ru"]
+    site: wildberries.ru
+    phone: "+78001007505"
+    category: ретейл
+
+  Ozon:
+    aliases: [ozon, озон, "ozon.ru"]
+    site: ozon.ru
+    phone: "+78002347010"
+    category: ретейл
+
+  Магнит:
+    aliases: [магнит, magnit, магнит косметик]
+    site: magnit.ru
+    phone: "+78002009002"
+    category: ретейл
+
+  Перекрёсток:
+    aliases: [перекрёсток, перекресток, perekrestok]
+    site: perekrestok.ru
+    phone: "+78002001010"
+    category: ретейл
+
+  Пятёрочка:
+    aliases: [пятёрочка, пятерочка, pyaterochka]
+    site: 5ka.ru
+    phone: "+78005555505"
+    category: ретейл
+
+  Дикси:
+    aliases: [дикси, dixy]
+    site: dixy.ru
+    category: ретейл
+
+  KFC:
+    aliases: [kfc, кфс, ростикс, "rostic's", rostics, кэфси]
+    site: rostics.ru
+    category: ретейл
+
+  Бургер Кинг:
+    aliases: [бургер кинг, burger king, burgerking]
+    site: burgerking.ru
+    category: ретейл
+
+  Лэтуаль:
+    aliases: [лэтуаль, летуаль, "л'этуаль", letu, "letu.ru", "l'etoile"]
+    site: letu.ru
+    phone: "+78007000707"
+    category: ретейл
+
+  Sunlight:
+    aliases: [sunlight, санлайт]
+    site: sunlight.net
+    category: ретейл
+
+  Улыбка радуги:
+    aliases: [улыбка радуги, r-ulybka]
+    site: r-ulybka.ru
+    category: ретейл
+
+  Miele:
+    aliases: [miele, миле]
+    site: miele.ru
+    category: ретейл
+
+  Спортмастер:
+    aliases: [спортмастер, sportmaster]
+    site: sportmaster.ru
+    category: ретейл
+
+  ВкусВилл:
+    aliases: [вкусвилл, vkusvill]
+    site: vkusvill.ru
+    category: ретейл
+
+  Лукойл:
+    aliases: [лукойл, lukoil]
+    site: lukoil.ru
+    category: авто
+
+  Газпромнефть:
+    aliases: [газпромнефть, газпром нефть, gazpromneft]
+    site: gpnbonus.ru
+    category: авто
+
+  Сбербанк:
+    aliases: [сбербанк, сбер, sber, sberbank]
+    site: sber.ru
+    phone: "+78005555550"
+    category: финансы
+
+  ВТБ:
+    aliases: [втб, vtb]
+    site: vtb.ru
+    phone: "+78001002424"
+    category: финансы
+
+  Т-Банк:
+    aliases: [т-банк, тинькофф, tinkoff, "t-bank"]
+    site: tbank.ru
+    phone: "+78005555550"
+    category: финансы
+
+  Киномакс:
+    aliases: [киномакс, kinomax, "kinomax.ru", кинoмакс]
+    site: kinomax.ru
+    category: развлечения
+
+  Спасская башня:
+    aliases: [спасская башня, spasstower, "spasstower.ru", спасская]
+    site: spasstower.ru
+    category: развлечения
+
+  День Индии:
+    aliases: [день индии, india day, indiaday, "indiaday.ru"]
+    site: indiaday.ru
+    category: развлечения
+
+  Большая страна:
+    aliases: [большая страна, mpbs, "mpbs.ru", mmpbs]
+    site: mpbs.ru
+    category: развлечения
+
+  Самолёт:
+    aliases: [самолёт, самолет, samolet, "samolet.ru", квартал домашний]
+    site: samolet.ru
+    phone: "+74951503366"
+    category: недвижимость
+
+  ПИК:
+    aliases: [пик, "pik", "pik.ru"]
+    site: pik.ru
+    category: недвижимость
+
+  А101:
+    aliases: [а101, a101, "a101.ru"]
+    site: a101.ru
+    category: недвижимость
+
+  Инвитро:
+    aliases: [инвитро, invitro]
+    site: invitro.ru
+    category: медицина
+
+  Гемотест:
+    aliases: [гемотест, gemotest]
+    site: gemotest.ru
+    category: медицина

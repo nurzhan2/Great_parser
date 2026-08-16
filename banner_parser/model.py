@@ -75,7 +75,12 @@ class BannerRecord:
     sites: list[str] = field(default_factory=list)
     telegram: list[str] = field(default_factory=list)
     text: str = ""
-    advertiser: Optional[str] = None
+    advertiser: Optional[str] = None          # как написано на щите
+    brand: Optional[str] = None               # каноничное имя из справочника
+    brand_matched: bool = False               # нашёлся ли бренд в справочнике
+    construction: Optional[str] = None        # тип конструкции
+    dir_site: Optional[str] = None            # контакты ИЗ СПРАВОЧНИКА,
+    dir_phone: Optional[str] = None           # не прочитанные со щита
     address: Optional[str] = None
     score: float = 1.0
     full_image_path: Optional[str] = None   # обзорное фото панорамы

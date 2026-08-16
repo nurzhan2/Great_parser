@@ -11,6 +11,7 @@ from typing import Iterator, Optional
 from PIL import Image
 
 from . import runlog
+from .brands import build_brand_directory
 from .classify import build_classifier
 from .config import Config
 from .detect import build_detector
@@ -34,6 +35,7 @@ class Pipeline:
         self.verifier = build_verifier(cfg)
         self.ocr = build_ocr(cfg)
         self.classifier = build_classifier(cfg)
+        self.brands = build_brand_directory(cfg)
         self.storage = Storage(
             cfg.get("storage.db_path", "data/banners.sqlite"),
             dedup_radius_m=cfg.get("dedup.radius_m", 25.0),
@@ -153,6 +155,13 @@ class Pipeline:
         category = (ocr_res.category if ocr_res and ocr_res.category
                     else self.classifier.classify(text, crop))
         advertiser = ocr_res.advertiser if ocr_res else None
+        construction = ocr_res.construction if ocr_res else None
+        # Нормализация бренда и обогащение контактов из справочника.
+        # Контакты справочника НЕ смешиваются с прочитанными со щита:
+        # это данные другой природы и другой надёжности.
+        binfo = self.brands.lookup(advertiser) if self.brands else None
+        if binfo is not None and binfo.matched and not category:
+            category = binfo.category or category
         # Фильтра по теме здесь БОЛЬШЕ НЕТ. «Это реклама» решает детекция и
         # verify, «это недвижимость» — тема по тексту; смешивать их нельзя:
         # баннер с нечитаемым OCR терял тему и выбрасывался (5 из 8 кандидатов
@@ -192,6 +201,11 @@ class Pipeline:
             telegram=contacts.telegram,
             text=text,
             advertiser=advertiser,
+            brand=(binfo.canonical if binfo else None),
+            brand_matched=bool(binfo and binfo.matched),
+            construction=construction,
+            dir_site=(binfo.site if binfo else None),
+            dir_phone=(binfo.phone if binfo else None),
             address=pano.ref.address,
             score=det.score,
             full_image_path=None,
