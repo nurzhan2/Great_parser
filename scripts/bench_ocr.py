@@ -25,6 +25,7 @@ from PIL import Image                                              # noqa: E402
 
 from banner_parser.config import Config                            # noqa: E402
 from banner_parser.ocr.engines import build_backend                # noqa: E402
+from banner_parser.ocr.ocr import OcrEngine                         # noqa: E402
 
 # Цена за 1M токенов, $. Источник — прайс Anthropic для claude-sonnet-4-6.
 PRICE_IN, PRICE_OUT = 3.00, 15.00
@@ -58,6 +59,8 @@ def main() -> None:
     ap.add_argument("--crops", required=True)
     ap.add_argument("--gt", required=True)
     ap.add_argument("--engine", action="append", required=True)
+    ap.add_argument("--cache", default=None,
+                    help="файл кэша: повторный замер тех же кропов бесплатен")
     args = ap.parse_args()
 
     gt = json.load(io.open(args.gt, encoding="utf-8"))
@@ -67,12 +70,12 @@ def main() -> None:
           f"{'с/кроп':>9}{'$/100k':>10}")
 
     for name in args.engine:
-        backend = build_backend(_Cfg(name))
+        engine = OcrEngine(build_backend(_Cfg(name)), cache_path=args.cache)
         t0 = time.time()
         scores, adv_ok, cat_ok, tok_in, tok_out, done = [], 0, 0, 0, 0, 0
         for fn in files:
             im = Image.open(os.path.join(args.crops, fn)).convert("RGB")
-            r = backend.read(im)
+            r = engine.recognize(im)
             if r.failed:
                 continue
             done += 1
@@ -95,7 +98,11 @@ def main() -> None:
               f"{100*adv_ok/done:>10.0f}%{100*cat_ok/done:>7.0f}%"
               f"{dt/done:>9.1f}{cost:>10.0f}")
         if tok_in:
-            print(f"{'':<12}токенов: вход {tok_in}, выход {tok_out} на {done} кропов")
+            spent = (tok_in * PRICE_IN + tok_out * PRICE_OUT) / 1e6
+            print(f"{'':<12}токенов: вход {tok_in}, выход {tok_out} "
+                  f"на {done} кропов; потрачено ${spent:.4f}")
+        print(f"{'':<12}{engine.stats()}")
+        engine.close()
 
 
 if __name__ == "__main__":
