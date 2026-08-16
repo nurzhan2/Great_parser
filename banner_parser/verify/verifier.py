@@ -51,12 +51,12 @@ def ad_metrics(image: Image.Image) -> dict:
     edge_density = float(((gx > 24).mean() + (gy > 24).mean()) / 2)
   
      return {
-      "colorfulness": colorfulness,
-      "saturation": saturation,
-      "edge_density": edge_density,
-      "gray_std": gray_std,
-      "bright_ratio": bright_ratio,
-      "dark_ratio": dark_ratio,
+        "colorfulness": colorfulness,
+        "saturation": saturation,
+        "edge_density": edge_density,
+        "gray_std": gray_std,
+        "bright_ratio": bright_ratio,
+        "dark_ratio": dark_ratio,
      }
 
 
