@@ -159,7 +159,13 @@ class Pipeline:
         # Нормализация бренда и обогащение контактов из справочника.
         # Контакты справочника НЕ смешиваются с прочитанными со щита:
         # это данные другой природы и другой надёжности.
-        binfo = self.brands.lookup(advertiser) if self.brands else None
+        # ЖК со щита — подсказка для поиска застройщика: «Квартал Домашний»
+        # однозначно указывает на Самолёт, даже если сам застройщик не назван.
+        binfo = (self.brands.lookup(advertiser, ocr_res.complex_name if ocr_res else None)
+                 if self.brands else None)
+        # Частное объявление в общую базу контактов не идёт: это физлицо,
+        # а не рекламодатель рынка. Считаем таким, если движок так сказал.
+        personal = bool(ocr_res and (ocr_res.advertiser_type or "").lower().startswith("частн"))
         if binfo is not None and binfo.matched and not category:
             category = binfo.category or category
         # Фильтра по теме здесь БОЛЬШЕ НЕТ. «Это реклама» решает детекция и
@@ -206,6 +212,14 @@ class Pipeline:
             construction=construction,
             dir_site=(binfo.site if binfo else None),
             dir_phone=(binfo.phone if binfo else None),
+            is_realty=(ocr_res.is_realty if ocr_res else None),
+            developer=((binfo.canonical if binfo and binfo.matched else None)
+                       or (ocr_res.developer if ocr_res else None)),
+            complex_name=((ocr_res.complex_name if ocr_res else None)
+                          or (binfo.complex_name if binfo else None)),
+            offer_type=(ocr_res.offer_type if ocr_res else None),
+            advertiser_type=(ocr_res.advertiser_type if ocr_res else None),
+            personal_ad=personal,
             address=pano.ref.address,
             score=det.score,
             full_image_path=None,

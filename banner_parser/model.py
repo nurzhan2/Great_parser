@@ -79,6 +79,12 @@ class BannerRecord:
     brand: Optional[str] = None               # каноничное имя из справочника
     brand_matched: bool = False               # нашёлся ли бренд в справочнике
     construction: Optional[str] = None        # тип конструкции
+    is_realty: Optional[str] = None           # да | нет | не уверен
+    developer: Optional[str] = None           # застройщик (каноничный)
+    complex_name: Optional[str] = None        # ЖК — отдельная сущность
+    offer_type: Optional[str] = None          # новостройка | аренда | ипотека…
+    advertiser_type: Optional[str] = None     # застройщик | агентство | банк | частное лицо
+    personal_ad: bool = False                 # частное объявление
     dir_site: Optional[str] = None            # контакты ИЗ СПРАВОЧНИКА,
     dir_phone: Optional[str] = None           # не прочитанные со щита
     address: Optional[str] = None

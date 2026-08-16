@@ -1,165 +1,145 @@
-# Справочник рекламодателей: алиасы для нормализации + контакты для обогащения.
+# Справочник сегмента «наружная реклама недвижимости».
 #
-# Зачем алиасы: VLM возвращает то, что написано на щите — «Wildberries», «WB»,
-# «вайлдберриз», «ВБ». Это один рекламодатель, и без приведения к каноничному
-# имени база не группируется. Замер: «День Индии» и «India Day» на соседних
-# щитах считались разными брендами.
+# Три роли рекламодателя, они же три раздела: застройщики, агентства, банки
+# с ипотечными продуктами. Локальный ритейл и общепит из справочника убраны —
+# фокус проекта сузился до недвижимости, и наполнять справочник тысячами
+# локальных брендов больше не требуется. Это и было прежним узким местом.
 #
-# Зачем контакты здесь: со щита они читаются надёжно только при крупном шрифте
-# (замер: 1 верный сайт из 4 на мелком). Контакты из этого файла — совсем
-# другие по надёжности данные, поэтому в базе и в Excel они лежат в отдельных
-# колонках и НИКОГДА не смешиваются с прочитанным со щита.
+# ЖК и застройщик — РАЗНЫЕ сущности. «Квартал Домашний» — это жилой комплекс,
+# застройщик у него «Самолёт». Поэтому названия ЖК живут в отдельном ключе
+# complexes и резолвятся в застройщика, а не подменяют его.
 #
-# Наполнено по брендам, реально встреченным на тестовом обходе Люблинской,
-# плюс крупные федеральные рекламодатели наружки. Пополняется вручную.
+# Контакты отсюда попадают в ОТДЕЛЬНЫЕ колонки Excel и никогда не смешиваются
+# с прочитанными со щита: со щита читается надёжно только крупный шрифт.
 
 brands:
-  Wildberries:
-    aliases: [wildberries, wb, вайлдберриз, вб, "wb.ru"]
-    site: wildberries.ru
-    phone: "+78001007505"
-    category: ретейл
-
-  Ozon:
-    aliases: [ozon, озон, "ozon.ru"]
-    site: ozon.ru
-    phone: "+78002347010"
-    category: ретейл
-
-  Магнит:
-    aliases: [магнит, magnit, магнит косметик]
-    site: magnit.ru
-    phone: "+78002009002"
-    category: ретейл
-
-  Перекрёсток:
-    aliases: [перекрёсток, перекресток, perekrestok]
-    site: perekrestok.ru
-    phone: "+78002001010"
-    category: ретейл
-
-  Пятёрочка:
-    aliases: [пятёрочка, пятерочка, pyaterochka]
-    site: 5ka.ru
-    phone: "+78005555505"
-    category: ретейл
-
-  Дикси:
-    aliases: [дикси, dixy]
-    site: dixy.ru
-    category: ретейл
-
-  KFC:
-    aliases: [kfc, кфс, ростикс, "rostic's", rostics, кэфси]
-    site: rostics.ru
-    category: ретейл
-
-  Бургер Кинг:
-    aliases: [бургер кинг, burger king, burgerking]
-    site: burgerking.ru
-    category: ретейл
-
-  Лэтуаль:
-    aliases: [лэтуаль, летуаль, "л'этуаль", letu, "letu.ru", "l'etoile"]
-    site: letu.ru
-    phone: "+78007000707"
-    category: ретейл
-
-  Sunlight:
-    aliases: [sunlight, санлайт]
-    site: sunlight.net
-    category: ретейл
-
-  Улыбка радуги:
-    aliases: [улыбка радуги, r-ulybka]
-    site: r-ulybka.ru
-    category: ретейл
-
-  Miele:
-    aliases: [miele, миле]
-    site: miele.ru
-    category: ретейл
-
-  Спортмастер:
-    aliases: [спортмастер, sportmaster]
-    site: sportmaster.ru
-    category: ретейл
-
-  ВкусВилл:
-    aliases: [вкусвилл, vkusvill]
-    site: vkusvill.ru
-    category: ретейл
-
-  Лукойл:
-    aliases: [лукойл, lukoil]
-    site: lukoil.ru
-    category: авто
-
-  Газпромнефть:
-    aliases: [газпромнефть, газпром нефть, gazpromneft]
-    site: gpnbonus.ru
-    category: авто
-
-  Сбербанк:
-    aliases: [сбербанк, сбер, sber, sberbank]
-    site: sber.ru
-    phone: "+78005555550"
-    category: финансы
-
-  ВТБ:
-    aliases: [втб, vtb]
-    site: vtb.ru
-    phone: "+78001002424"
-    category: финансы
-
-  Т-Банк:
-    aliases: [т-банк, тинькофф, tinkoff, "t-bank"]
-    site: tbank.ru
-    phone: "+78005555550"
-    category: финансы
-
-  Киномакс:
-    aliases: [киномакс, kinomax, "kinomax.ru", кинoмакс]
-    site: kinomax.ru
-    category: развлечения
-
-  Спасская башня:
-    aliases: [спасская башня, spasstower, "spasstower.ru", спасская]
-    site: spasstower.ru
-    category: развлечения
-
-  День Индии:
-    aliases: [день индии, india day, indiaday, "indiaday.ru"]
-    site: indiaday.ru
-    category: развлечения
-
-  Большая страна:
-    aliases: [большая страна, mpbs, "mpbs.ru", mmpbs]
-    site: mpbs.ru
-    category: развлечения
-
+  # ---- застройщики ----
   Самолёт:
-    aliases: [самолёт, самолет, samolet, "samolet.ru", квартал домашний]
+    role: застройщик
+    aliases: [самолёт, самолет, samolet, "samolet.ru", гк самолет, группа самолет]
+    complexes: [квартал домашний, эко бунино, остафьево, квартал ивакино,
+                мытищи парк, спутник, тропарево парк, новое внуково]
     site: samolet.ru
     phone: "+74951503366"
-    category: недвижимость
 
   ПИК:
-    aliases: [пик, "pik", "pik.ru"]
+    role: застройщик
+    aliases: [пик, "pik", "pik.ru", гк пик, группа пик]
+    complexes: [бунинские луга, саларьево парк, люблинский парк, полар,
+                мичуринский парк, второй нагатинский, кузьминский лес]
     site: pik.ru
-    category: недвижимость
+    phone: "+74955000500"
+
+  ЛСР:
+    role: застройщик
+    aliases: [лср, "lsr", группа лср, "lsr.ru"]
+    complexes: [цивилизация, новая охта, лучи, обручевский]
+    site: lsr.ru
+
+  Донстрой:
+    role: застройщик
+    aliases: [донстрой, donstroy, "donstroy.ru"]
+    complexes: [символ, остров, событие, сердце столицы, жизнь на плющихе]
+    site: donstroy.com
 
   А101:
-    aliases: [а101, a101, "a101.ru"]
+    role: застройщик
+    aliases: [а101, a101, "a101.ru", группа а101]
+    complexes: [скандинавия, испанские кварталы, дзен кварталы, белые ночи]
     site: a101.ru
-    category: недвижимость
 
-  Инвитро:
-    aliases: [инвитро, invitro]
-    site: invitro.ru
-    category: медицина
+  Гранель:
+    role: застройщик
+    aliases: [гранель, granelle, "granelle.ru", гк гранель]
+    complexes: [аквилон, бригантина, южная битца, пехра]
+    site: granelle.ru
 
-  Гемотест:
-    aliases: [гемотест, gemotest]
-    site: gemotest.ru
-    category: медицина
+  Эталон:
+    role: застройщик
+    aliases: [эталон, etalon, "etalon.ru", группа эталон]
+    complexes: [нормандия, шагал, воронцовский, серебряный фонтан]
+    site: etalongroup.com
+
+  ИНГРАД:
+    role: застройщик
+    aliases: [инград, ingrad, "ingrad.ru"]
+    complexes: [вавилова 4, филатов луг, преображение, михайловский парк]
+    site: ingrad.ru
+
+  MR Group:
+    role: застройщик
+    aliases: [mr group, мр групп, "mr-group.ru", мр груп]
+    complexes: [саввинская, мозаика, династия, city bay, слава]
+    site: mr-group.ru
+
+  Level:
+    role: застройщик
+    aliases: [level, левел, "levelgroup.ru", level group]
+    complexes: [амурская, стрешнево, мичуринский, южнопортовая, нагатинская]
+    site: levelgroup.ru
+
+  ФСК:
+    role: застройщик
+    aliases: [фск, "fsk", группа фск, "fsk.ru"]
+    complexes: [сиреневый парк, вереск, режиссер, архитектор]
+    site: fsk.ru
+
+  # ---- агентства ----
+  Инком:
+    role: агентство
+    aliases: [инком, инком-недвижимость, incom, "incom.ru"]
+    site: incom.ru
+    phone: "+74957777777"
+
+  Миэль:
+    role: агентство
+    aliases: [миэль, miel, "miel.ru"]
+    site: miel.ru
+
+  Этажи:
+    role: агентство
+    aliases: [этажи, etagi, "etagi.com"]
+    site: etagi.com
+
+  Циан:
+    role: агентство
+    aliases: [циан, cian, "cian.ru"]
+    site: cian.ru
+
+  Домклик:
+    role: агентство
+    aliases: [домклик, domclick, "domclick.ru"]
+    site: domclick.ru
+
+  Бест-Новострой:
+    role: агентство
+    aliases: [бест-новострой, бест новострой, "bn.ru", best-novostroy]
+    site: best-novostroy.ru
+
+  # ---- банки с ипотечными продуктами ----
+  Сбербанк:
+    role: банк
+    aliases: [сбербанк, сбер, sber, sberbank, сбер ипотека]
+    site: domclick.ru
+    phone: "+78005555550"
+
+  ВТБ:
+    role: банк
+    aliases: [втб, vtb, втб ипотека]
+    site: vtb.ru
+    phone: "+78001002424"
+
+  Альфа-Банк:
+    role: банк
+    aliases: [альфа-банк, альфа банк, alfabank, альфа]
+    site: alfabank.ru
+
+  Газпромбанк:
+    role: банк
+    aliases: [газпромбанк, gazprombank, гпб]
+    site: gazprombank.ru
+
+  Дом.РФ:
+    role: банк
+    aliases: ["дом.рф", дом рф, "domrf", "дом.рф банк"]
+    site: domrfbank.ru

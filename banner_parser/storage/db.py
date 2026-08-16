@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS banners (
     brand       TEXT,
     brand_matched INTEGER,
     construction TEXT,
+    is_realty   TEXT,
+    developer   TEXT,
+    complex_name TEXT,
+    offer_type  TEXT,
+    advertiser_type TEXT,
+    personal_ad INTEGER,
     dir_site    TEXT,
     dir_phone   TEXT,
     address     TEXT,
@@ -115,7 +121,9 @@ class Storage:
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(banners)")}
         for col in ("phones_unreliable", "sites", "telegram", "advertiser",
                     "brand", "brand_matched", "construction",
-                    "dir_site", "dir_phone"):
+                    "dir_site", "dir_phone", "is_realty", "developer",
+                    "complex_name", "offer_type", "advertiser_type",
+                    "personal_ad"):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE banners ADD COLUMN {col} TEXT")
 
@@ -174,16 +182,34 @@ class Storage:
                (banner_id, dedup_key, panoid, lon, lat, timestamp, bearing_deg,
                 category, phones, phones_unreliable, sites, telegram, text,
                 advertiser, brand, brand_matched, construction, dir_site, dir_phone,
+                is_realty, developer, complex_name, offer_type,
+                advertiser_type, personal_ad,
                 address, score, full_image_path, crop_image_path, source_url)
                VALUES (:banner_id, :dedup_key, :panoid, :lon, :lat, :timestamp,
                 :bearing_deg, :category, :phones, :phones_unreliable, :sites,
                 :telegram, :text, :advertiser, :brand, :brand_matched, :construction,
-                :dir_site, :dir_phone, :address, :score,
+                :dir_site, :dir_phone, :is_realty, :developer, :complex_name,
+                :offer_type, :advertiser_type, :personal_ad, :address, :score,
                 :full_image_path, :crop_image_path, :source_url)""",
             {**row, "dedup_key": key},
         )
         self.conn.commit()
         return True
+
+    def realty(self, include_unsure: bool = True, personal=None):
+        """Записи сегмента недвижимости. Фильтр применяется ПРИ ВЫГРУЗКЕ:
+        собирается всё, отдаётся отобранное — несобранное вернуть нельзя,
+        а лишнее всегда можно отсечь."""
+        flags = ["да"] + (["не уверен"] if include_unsure else [])
+        placeholders = ",".join("?" * len(flags))
+        q = "SELECT * FROM banners WHERE lower(coalesce(is_realty,'')) IN (" + placeholders + ")"
+        args = list(flags)
+        if personal is not None:
+            q += " AND coalesce(personal_ad,0) = ?"
+            args.append(1 if personal else 0)
+        # Сортировка по застройщику: так база читается продавцом.
+        q += " ORDER BY coalesce(developer, advertiser, 'яяя'), complex_name"
+        yield from self.conn.execute(q, args)
 
     def all(self, category: str | None = None) -> Iterator[sqlite3.Row]:
         if category:

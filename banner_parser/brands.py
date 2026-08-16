@@ -31,8 +31,10 @@ _DEFAULT_PATH = Path(__file__).resolve().parent.parent / "brands.yaml"
 
 @dataclass
 class BrandInfo:
-    canonical: Optional[str] = None      # каноничное имя из справочника
-    matched: bool = False                # нашёлся ли бренд в справочнике
+    canonical: Optional[str] = None      # каноничное имя застройщика/агентства
+    matched: bool = False                # нашёлся ли в справочнике
+    role: Optional[str] = None           # застройщик | агентство | банк
+    complex_name: Optional[str] = None   # ЖК, если опознан по названию
     site: Optional[str] = None           # контакты ИЗ СПРАВОЧНИКА, не со щита
     phone: Optional[str] = None
     category: Optional[str] = None
@@ -46,6 +48,7 @@ def _norm(s: str) -> str:
 class BrandDirectory:
     def __init__(self, path: Optional[str] = None):
         self.by_alias: dict[str, dict] = {}
+        self.by_complex: dict[str, tuple] = {}
         p = Path(path) if path else _DEFAULT_PATH
         try:
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -55,17 +58,42 @@ class BrandDirectory:
         for canonical, info in (data.get("brands") or {}).items():
             info = info or {}
             entry = {"canonical": canonical, "site": info.get("site"),
-                     "phone": info.get("phone"), "category": info.get("category")}
-            keys = [canonical] + list(info.get("aliases") or [])
-            for k in keys:
+                     "phone": info.get("phone"),
+                     "category": info.get("category") or "недвижимость",
+                     "role": info.get("role")}
+            for k in [canonical] + list(info.get("aliases") or []):
                 nk = _norm(str(k))
                 if nk:
                     self.by_alias[nk] = entry
-        log.info("справочник брендов: %d записей, %d алиасов",
-                 len(data.get("brands") or {}), len(self.by_alias))
+            # ЖК резолвится в застройщика, но остаётся ОТДЕЛЬНОЙ сущностью:
+            # запоминаем, каким именно комплексом было совпадение.
+            for c in (info.get("complexes") or []):
+                nc = _norm(str(c))
+                if nc:
+                    self.by_complex[nc] = (entry, str(c))
+        log.info("справочник: %d рекламодателей, %d алиасов, %d ЖК",
+                 len(data.get("brands") or {}), len(self.by_alias), len(self.by_complex))
 
-    def lookup(self, raw: Optional[str]) -> BrandInfo:
-        """Найти бренд по тому, что вернул движок."""
+    def lookup(self, raw: Optional[str], complex_hint: Optional[str] = None) -> BrandInfo:
+        """Найти рекламодателя по имени со щита и/или по названию ЖК."""
+        # Сначала пробуем ЖК: «Квартал Домашний» на щите может стоять без
+        # упоминания застройщика, но однозначно указывает на него.
+        for src in (complex_hint, raw):
+            nc = _norm(src or "")
+            if not nc:
+                continue
+            hit = self.by_complex.get(nc)
+            if hit is None:
+                for cname in sorted(self.by_complex, key=len, reverse=True):
+                    if len(cname) >= 5 and cname in nc:
+                        hit = self.by_complex[cname]
+                        break
+            if hit is not None:
+                e, cname = hit
+                return BrandInfo(canonical=e["canonical"], matched=True,
+                                 role=e.get("role"), complex_name=cname,
+                                 site=e.get("site"), phone=e.get("phone"),
+                                 category=e.get("category"))
         if not raw:
             return BrandInfo()
         n = _norm(raw)
@@ -88,6 +116,7 @@ class BrandDirectory:
             # Не нашли — не выбрасываем: сохраняем как есть, но помечаем.
             return BrandInfo(canonical=raw.strip(), matched=False)
         return BrandInfo(canonical=entry["canonical"], matched=True,
+                         role=entry.get("role"),
                          site=entry.get("site"), phone=entry.get("phone"),
                          category=entry.get("category"))
 

@@ -77,7 +77,7 @@ def cmd_export(args) -> None:
     category = None if args.all else (args.category
                                       or cfg.get("filter.only_category", None))
     total = st.count()
-    n = export_xlsx(st, out, category=category)
+    n = export_xlsx(st, out, category=category, realty_only=args.realty)
     log.info("выгрузка: %d строк из %d в БД (фильтр темы: %s)",
              n, total, category or "нет")
     print(f"Выгружено строк: {n} из {total} в БД → {out}")
@@ -153,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default=None)
     e.add_argument("--category", default=None,
                    help="фильтр по теме (по умолчанию — filter.only_category из конфига)")
+    e.add_argument("--realty", action="store_true",
+                   help="только сегмент недвижимости; частные объявления — отдельным листом")
     e.add_argument("--all", action="store_true",
                    help="выгрузить всё, игнорируя filter.only_category")
     e.set_defaults(func=cmd_export)
