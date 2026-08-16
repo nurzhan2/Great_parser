@@ -16,7 +16,7 @@ from .classify import build_classifier
 from .config import Config
 from .detect import build_detector
 from .model import BannerRecord, Detection
-from .ocr import build_ocr, extract_contacts
+from .ocr import OcrResult, build_ocr, extract_contacts
 from .storage import Storage
 from .verify import build_verifier
 from .yandex import HttpClient, Panorama
@@ -64,10 +64,24 @@ class Pipeline:
         self.rectify = cfg.get("detector.rectify", True)
         # Ниже этой стороны кропа контакты считаются ненадёжными.
         self.contacts_min_side = cfg.get("ocr.contacts_min_side", 220)
+        # Не тратим облачный OCR на кропы, где контакты физически
+        # недостаточно крупные для надёжного чтения.
+        self.cloud_ocr_min_side = cfg.get(
+            "ocr.cloud_min_side",
+            self.contacts_min_side,
+        )
+        # Жёсткий бюджетный предохранитель на одну панораму.
+        self.max_cloud_ocr_per_panorama = cfg.get(
+            "ocr.max_cloud_calls_per_panorama",
+            4,
+        )
+        self._cloud_ocr_calls = 0
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
         pid = pano.ref.panoid
+        # Счётчик платных OCR-вызовов отдельный для каждой панорамы.
+        self._cloud_ocr_calls = 0
         # Обзор нужен только детектору (в памяти), на диск не сохраняется.
         runlog.set_stage(f"сшивка {pid[:16]}")
         t0 = time.monotonic()
@@ -145,7 +159,57 @@ class Pipeline:
 
         # OCR только для прошедших проверку кропов.
         runlog.set_stage(f"OCR {pano.ref.panoid[:16]}")
-        ocr_res = self.ocr.recognize(crop) if self.ocr else None
+        ocr_res = None
+
+        if self.ocr is not None:
+            backend_name = getattr(
+                getattr(self.ocr, "backend", None),
+                "name",
+                "",
+            )
+        
+            is_cloud_ocr = (
+                backend_name.startswith("vlm-")
+                or backend_name.startswith("openai-")
+            )
+        
+            # На маленьком кропе платный VLM не вызываем вообще:
+            # надёжный телефон из нескольких пикселей всё равно не получить.
+            if is_cloud_ocr and min(crop.size) < self.cloud_ocr_min_side:
+                log.info(
+                    "облачный OCR пропущен: мелкий кроп %dx%d < %d: %s",
+                    crop.size[0],
+                    crop.size[1],
+                    self.cloud_ocr_min_side,
+                    pano.ref.panoid,
+                )
+        
+                ocr_res = OcrResult(
+                    engine="skipped-lowres",
+                )
+        
+            # Даже если verifier пропустил много кандидатов,
+            # стоимость одной панорамы имеет жёсткий потолок.
+            elif (
+                is_cloud_ocr
+                and self._cloud_ocr_calls >= self.max_cloud_ocr_per_panorama
+            ):
+                log.info(
+                    "облачный OCR пропущен: лимит %d вызовов на панораму: %s",
+                    self.max_cloud_ocr_per_panorama,
+                    pano.ref.panoid,
+                )
+        
+                ocr_res = OcrResult(
+                    engine="skipped-budget",
+                )
+        
+            else:
+                if is_cloud_ocr:
+                    self._cloud_ocr_calls += 1
+        
+                ocr_res = self.ocr.recognize(crop)
+                
         text = ocr_res.text if ocr_res else ""
         if ocr_res is not None and ocr_res.failed:
             log.info("текст не распознан (движок %s отказал): %s",
