@@ -15,8 +15,12 @@ class OcrEngine:
     """Обёртка над выбранным движком. Кэширует результаты по хэшу кропа —
     повторный прогон тех же картинок не стоит ни времени, ни денег."""
 
-    def __init__(self, backend, cache_path: Optional[str] = None):
+    def __init__(self, backend, cache_path: Optional[str] = None, fallback=None):
         self.backend = backend
+        # Запасной движок нужен, когда основной отказал совсем (кончился баланс
+        # API, нет сети). 31% распознанных слов лучше нуля: бренд иногда
+        # читается, и запись перестаёт быть пустой.
+        self.fallback = fallback
         self.cache = ResultCache(cache_path) if cache_path else None
 
     def recognize(self, image: Image.Image) -> OcrResult:
