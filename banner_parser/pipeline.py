@@ -220,6 +220,7 @@ class Pipeline:
             offer_type=(ocr_res.offer_type if ocr_res else None),
             advertiser_type=(ocr_res.advertiser_type if ocr_res else None),
             personal_ad=personal,
+            ocr_engine=(ocr_res.engine if ocr_res else None),
             address=pano.ref.address,
             score=det.score,
             full_image_path=None,

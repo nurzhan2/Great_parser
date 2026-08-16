@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS banners (
     offer_type  TEXT,
     advertiser_type TEXT,
     personal_ad INTEGER,
+    ocr_engine  TEXT,
     dir_site    TEXT,
     dir_phone   TEXT,
     address     TEXT,
@@ -123,7 +124,7 @@ class Storage:
                     "brand", "brand_matched", "construction",
                     "dir_site", "dir_phone", "is_realty", "developer",
                     "complex_name", "offer_type", "advertiser_type",
-                    "personal_ad"):
+                    "personal_ad", "ocr_engine"):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE banners ADD COLUMN {col} TEXT")
 
@@ -183,13 +184,13 @@ class Storage:
                 category, phones, phones_unreliable, sites, telegram, text,
                 advertiser, brand, brand_matched, construction, dir_site, dir_phone,
                 is_realty, developer, complex_name, offer_type,
-                advertiser_type, personal_ad,
+                advertiser_type, personal_ad, ocr_engine,
                 address, score, full_image_path, crop_image_path, source_url)
                VALUES (:banner_id, :dedup_key, :panoid, :lon, :lat, :timestamp,
                 :bearing_deg, :category, :phones, :phones_unreliable, :sites,
                 :telegram, :text, :advertiser, :brand, :brand_matched, :construction,
                 :dir_site, :dir_phone, :is_realty, :developer, :complex_name,
-                :offer_type, :advertiser_type, :personal_ad, :address, :score,
+                :offer_type, :advertiser_type, :personal_ad, :ocr_engine, :address, :score,
                 :full_image_path, :crop_image_path, :source_url)""",
             {**row, "dedup_key": key},
         )

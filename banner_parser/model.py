@@ -85,6 +85,7 @@ class BannerRecord:
     offer_type: Optional[str] = None          # новостройка | аренда | ипотека…
     advertiser_type: Optional[str] = None     # застройщик | агентство | банк | частное лицо
     personal_ad: bool = False                 # частное объявление
+    ocr_engine: Optional[str] = None          # каким движком получен текст
     dir_site: Optional[str] = None            # контакты ИЗ СПРАВОЧНИКА,
     dir_phone: Optional[str] = None           # не прочитанные со щита
     address: Optional[str] = None

@@ -6,7 +6,7 @@ from typing import Optional
 
 from PIL import Image
 
-from .engines import OcrResult, ResultCache, build_backend
+from .engines import EasyOcrBackend, OcrResult, ResultCache, build_backend
 
 log = logging.getLogger(__name__)
 
@@ -26,9 +26,15 @@ class OcrEngine:
             if hit is not None:
                 return hit
         res = self.backend.read(image)
+        if res.failed and self.fallback is not None:
+            log.info("движок %s не смог — пробуем запасной %s",
+                     self.backend.name, self.fallback.name)
+            alt = self.fallback.read(image)
+            if not alt.failed:
+                res = alt
         # Неудачу не кэшируем: движок мог отказать временно (сеть, лимит API).
         if self.cache is not None and not res.failed:
-            self.cache.put(key, res)
+            self.cache.put(ResultCache.key(image, res.engine), res)
         return res
 
     def read(self, image: Image.Image) -> str:
@@ -49,5 +55,12 @@ def build_ocr(cfg) -> Optional[OcrEngine]:
     if not cfg.get("ocr.enabled", True):
         return None
     backend = build_backend(cfg)
-    log.info("OCR-движок: %s", backend.name)
-    return OcrEngine(backend, cache_path=cfg.get("ocr.cache_path", "data/ocr_cache.sqlite"))
+    fb = None
+    name = (cfg.get("ocr.backend", "easyocr") or "easyocr").lower()
+    if name != "easyocr" and cfg.get("ocr.fallback_easyocr", True):
+        fb = EasyOcrBackend(languages=cfg.get("ocr.languages", ["ru", "en"]),
+                            gpu=cfg.get("ocr.gpu", False))
+    log.info("OCR-движок: %s%s", backend.name,
+             f" (запасной: {fb.name})" if fb else "")
+    return OcrEngine(backend, cache_path=cfg.get("ocr.cache_path", "data/ocr_cache.sqlite"),
+                     fallback=fb)
