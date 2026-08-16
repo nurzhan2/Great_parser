@@ -43,12 +43,20 @@ def ad_metrics(image: Image.Image) -> dict:
 
     # Плотность контуров = доля пикселей с сильным градиентом (текст/графика)
     gray = a.mean(-1)
+    gray_std = float(gray.std())
+    bright_ratio = float((gray >= 185.0).mean())
+    dark_ratio = float((gray <= 100.0).mean())
     gx = np.abs(np.diff(gray, axis=1))
     gy = np.abs(np.diff(gray, axis=0))
     edge_density = float(((gx > 24).mean() + (gy > 24).mean()) / 2)
-
-    return {"colorfulness": colorfulness, "saturation": saturation,
-            "edge_density": edge_density}
+  
+     return {
+    "colorfulness": colorfulness,
+    "saturation": saturation,
+    "edge_density": edge_density,
+    "gray_std": gray_std,
+    "bright_ratio": bright_ratio,
+    "dark_ratio": dark_ratio,}
 
 
 class AdVerifier:
@@ -58,10 +66,13 @@ class AdVerifier:
 
 class HeuristicVerifier(AdVerifier):
     def __init__(self, min_colorfulness: float = 18.0, min_edge_density: float = 0.040,
-                 min_saturation: float = 0.12):
+                 min_saturation: float = 0.12, paper_min_bright_ratio: float = 0.45, paper_min_dark_ratio: float = 0.01, paper_min_contrast: float = 18.0,):
         self.min_colorfulness = min_colorfulness
         self.min_edge_density = min_edge_density
         self.min_saturation = min_saturation
+        self.paper_min_bright_ratio = paper_min_bright_ratio
+        self.paper_min_dark_ratio = paper_min_dark_ratio
+        self.paper_min_contrast = paper_min_contrast
 
     def verify(self, image: Image.Image, text: str = "") -> VerifyResult:
         m = ad_metrics(image)
@@ -69,7 +80,17 @@ class HeuristicVerifier(AdVerifier):
         has_text = len((text or "").strip()) >= 4
         colorful = m["colorfulness"] >= self.min_colorfulness or m["saturation"] >= self.min_saturation
         textured = m["edge_density"] >= self.min_edge_density
-        is_ad = (textured and colorful) or (has_text and textured)
+        paper_like = (
+            textured
+            and m["bright_ratio"] >= self.paper_min_bright_ratio
+            and m["dark_ratio"] >= self.paper_min_dark_ratio
+            and m["gray_std"] >= self.paper_min_contrast
+        )
+        is_ad = (
+            (textured and colorful)
+            or paper_like
+            or (has_text and textured)
+        )
 
         # score: насколько уверенно превышены пороги
         score = min(1.0, 0.5 * m["edge_density"] / self.min_edge_density
@@ -129,4 +150,13 @@ def build_verifier(cfg) -> Optional[AdVerifier]:
         min_colorfulness=cfg.get("verify.min_colorfulness", 18.0),
         min_edge_density=cfg.get("verify.min_edge_density", 0.040),
         min_saturation=cfg.get("verify.min_saturation", 0.12),
+        paper_min_bright_ratio=cfg.get(
+            "verify.paper_min_bright_ratio", 0.45
+        ),
+        paper_min_dark_ratio=cfg.get(
+            "verify.paper_min_dark_ratio", 0.01
+        ),
+        paper_min_contrast=cfg.get(
+            "verify.paper_min_contrast", 18.0
+        ),
     )
