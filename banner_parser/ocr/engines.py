@@ -37,6 +37,7 @@ class OcrResult:
     text: str = ""
     advertiser: Optional[str] = None      # кто рекламируется — умеет только VLM
     category: Optional[str] = None        # тема — умеет только VLM
+    construction: Optional[str] = None    # тип конструкции — умеет только VLM
     engine: str = ""
     failed: bool = False                  # движок не смог; запись помечается
     usage: dict = field(default_factory=dict)   # токены для подсчёта стоимости
@@ -51,7 +52,8 @@ class ResultCache:
         self.conn = sqlite3.connect(path)
         self.conn.execute("""CREATE TABLE IF NOT EXISTS ocr_cache (
             key TEXT PRIMARY KEY, engine TEXT, text TEXT,
-            advertiser TEXT, category TEXT, usage TEXT, created REAL)""")
+            advertiser TEXT, category TEXT, construction TEXT,
+            usage TEXT, created REAL)""")
         self.conn.commit()
         self.hits = self.misses = 0
 
@@ -63,19 +65,20 @@ class ResultCache:
 
     def get(self, k: str) -> Optional[OcrResult]:
         row = self.conn.execute(
-            "SELECT engine, text, advertiser, category, usage FROM ocr_cache WHERE key=?",
+            "SELECT engine, text, advertiser, category, construction, usage FROM ocr_cache WHERE key=?",
             (k,)).fetchone()
         if row is None:
             self.misses += 1
             return None
         self.hits += 1
         return OcrResult(text=row[1] or "", advertiser=row[2], category=row[3],
-                         engine=row[0], usage=json.loads(row[4] or "{}"))
+                         construction=row[4], engine=row[0],
+                         usage=json.loads(row[5] or "{}"))
 
     def put(self, k: str, r: OcrResult) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO ocr_cache VALUES (?,?,?,?,?,?,?)",
-            (k, r.engine, r.text, r.advertiser, r.category,
+            "INSERT OR REPLACE INTO ocr_cache VALUES (?,?,?,?,?,?,?,?)",
+            (k, r.engine, r.text, r.advertiser, r.category, r.construction,
              json.dumps(r.usage), time.time()))
         self.conn.commit()
 
@@ -162,17 +165,28 @@ class PaddleOcrBackend(OcrBackend):
             return OcrResult(engine=self.name, failed=True)
 
 
+# Версия промпта входит в ключ кэша: при смене промпта старые ответы
+# невалидны, и молча отдавать их из кэша нельзя.
+VLM_PROMPT_VERSION = "v2-brand"
+
 _VLM_PROMPT = (
     "На изображении — фрагмент наружной рекламы из панорамы улицы.\n"
     "Верни СТРОГО JSON без пояснений и без markdown-обёртки, с полями:\n"
-    '  "text" — весь видимый на изображении текст ДОСЛОВНО, сохраняя порядок '
-    "строк, включая телефоны, сайты и мелкий шрифт. Если текста нет — пустая строка.\n"
-    '  "advertiser" — название рекламодателя или бренда, если оно понятно; '
-    "иначе null.\n"
+    '  "advertiser" — ГЛАВНОЕ ПОЛЕ. Название бренда или рекламодателя. '
+    "Крупный логотип и название читаются надёжно — назови их уверенно, "
+    "даже если остальной текст мелкий. Если рекламы нет вовсе — null.\n"
+    '  "text" — крупный читаемый текст: слоган, название, условия. '
+    "Дословно, сохраняя порядок строк. Мелкий нечитаемый шрифт "
+    "не восстанавливай — лучше пропусти.\n"
     '  "category" — одна из: недвижимость, авто, финансы, медицина, ретейл, '
     "услуги, развлечения, другое. Если непонятно — null.\n"
-    "Ничего не додумывай: переписывай только то, что реально видно. "
-    "Не выдумывай телефоны и адреса сайтов."
+    '  "construction" — тип рекламной конструкции, одно из: билборд, '
+    "ситиформат, баннер на ограждении, вывеска, стела, экран, "
+    "реклама на остановке, другое. Определяй по форме и размещению.\n"
+    '  "phone" и "site" — ТОЛЬКО если символы видны крупно и однозначно. '
+    "Если шрифт мелкий, размытый или ты не уверен хотя бы в одном символе — "
+    "верни null. НЕ достраивай домен по названию бренда и НЕ угадывай цифры: "
+    "null здесь правильнее ошибки, неверный телефон хуже отсутствующего.\n"
 )
 
 
@@ -183,7 +197,7 @@ class VlmBackend(OcrBackend):
     не попадает. Отказ API не роняет обход: запись помечается failed и идёт
     дальше, а не обрывает весь прогон.
     """
-    name = "vlm"
+    name = "vlm-" + VLM_PROMPT_VERSION
 
     def __init__(self, model: str = "claude-sonnet-4-6", max_side: int = 1024,
                  max_retries: int = 4, timeout: float = 60.0):
@@ -269,10 +283,18 @@ def _parse_vlm(raw: str, usage: dict, engine: str) -> OcrResult:
     except Exception:                             # noqa: BLE001
         log.warning("VLM вернул не-JSON (%.80r) — берём как обычный текст", raw[:80])
         return OcrResult(text=raw, engine=engine, usage=usage)
-    cat = d.get("category")
-    return OcrResult(text=str(d.get("text") or ""),
+    cat, con = d.get("category"), d.get("construction")
+    # Телефон и сайт модель отдаёт отдельными полями — приклеиваем их к тексту,
+    # чтобы разбор контактов работал на одном входе. Если модель вернула null,
+    # ничего не добавляем: это её отказ угадывать, и он ценнее догадки.
+    text = str(d.get("text") or "")
+    for extra in (d.get("phone"), d.get("site")):
+        if extra and str(extra).lower() not in ("null", "none"):
+            text = (text + "\n" + str(extra)).strip()
+    return OcrResult(text=text,
                      advertiser=(d.get("advertiser") or None),
                      category=(str(cat) if cat else None),
+                     construction=(str(con) if con else None),
                      engine=engine, usage=usage)
 
 
