@@ -184,10 +184,13 @@ class Pipeline:
                     pano.ref.panoid,
                 )
         
-                ocr_res = OcrResult(
-                    engine="skipped-lowres",
-                )
-        
+                fallback = getattr(self.ocr, "fallback", None)
+                
+                if fallback is not None:
+                    ocr_res = fallback.read(crop)
+                else:
+                    ocr_res = OcrResult(engine="skipped-lowres")
+                        
             # Даже если verifier пропустил много кандидатов,
             # стоимость одной панорамы имеет жёсткий потолок.
             elif (
@@ -200,9 +203,12 @@ class Pipeline:
                     pano.ref.panoid,
                 )
         
-                ocr_res = OcrResult(
-                    engine="skipped-budget",
-                )
+                fallback = getattr(self.ocr, "fallback", None)
+                
+                if fallback is not None:
+                    ocr_res = fallback.read(crop)
+                else:
+                    ocr_res = OcrResult(engine="skipped-budget")
         
             else:
                 if is_cloud_ocr:
