@@ -80,7 +80,7 @@ def cmd_export(args) -> None:
     n = export_xlsx(st, out, category=category, realty_only=args.realty)
     log.info("выгрузка: %d строк из %d в БД (фильтр темы: %s)",
              n, total, category or "нет")
-    print(f"Выгружено строк: {n} из {total} в БД → {out}")
+    print(f"Выгружено строк: {n} из {total} в БД -> {out}")
     if category and n < total:
         print(f"  (отфильтровано по теме '{category}'; --all выгрузит всё)")
     st.close()

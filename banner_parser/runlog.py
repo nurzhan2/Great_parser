@@ -122,6 +122,15 @@ def setup_logging(log_file: Optional[str] = None, level: str = "INFO") -> Option
 
     Файловый обработчик flush'ит каждую запись — хвост лога переживает SIGKILL.
     """
+    # Консоль Windows по умолчанию в cp866/cp1251, и любой не-ASCII символ в
+    # print() роняет команду с UnicodeEncodeError — так падал export на стрелке
+    # «→», хотя файл уже был записан. Просим потоки не падать на таких символах.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
