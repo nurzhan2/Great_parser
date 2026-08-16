@@ -60,6 +60,8 @@ class Pipeline:
         # Выпрямление кропа в перспективу: бокс приходит из перспективного вида,
         # а режется по прямоугольнику в equirect — отсюда трапеции и раздувание.
         self.rectify = cfg.get("detector.rectify", True)
+        # Ниже этой стороны кропа контакты считаются ненадёжными.
+        self.contacts_min_side = cfg.get("ocr.contacts_min_side", 220)
 
     # ---- одна панорама ---------------------------------------------------
     def process_panorama(self, pano: Panorama) -> list[BannerRecord]:
@@ -159,6 +161,19 @@ class Pipeline:
 
         crop_path = self.images_dir / f"{pano.ref.panoid}_{idx}.jpg"
         contacts = extract_contacts(text)
+        # Мелкий шрифт на далёком щите физически нечитаем: на кропе 291x108 px
+        # телефон имеет высоту в несколько пикселей. Замер показал, что на таких
+        # кропах распознавание даёт ПРАВДОПОДОБНЫЕ, но неверные контакты —
+        # телефон МВД 8(985)277-78-79 превратился в 227-78-70, kinomax.ru в
+        # kinomaks.ru. Звонить по такому номеру попадёшь не туда, поэтому
+        # контакты с кропов ниже порога помечаются ненадёжными, а не выдаются
+        # как проверенные.
+        if min(crop.size) < self.contacts_min_side:
+            if contacts.phones or contacts.sites or contacts.telegram:
+                log.info("контакты с мелкого кропа %dx%d помечены ненадёжными: %s",
+                         crop.size[0], crop.size[1], pano.ref.panoid)
+            contacts.phones_unreliable = contacts.phones_unreliable + contacts.phones
+            contacts.phones = []
         bearing = pano.bearing_of(det)
 
         bid = hashlib.md5(
