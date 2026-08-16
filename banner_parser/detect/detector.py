@@ -92,7 +92,9 @@ class OwlDetector(BannerDetector):
     def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble",
                  conf: float = 0.20, n_views: int = 6, fov_h_deg: float = 90.0,
                  view_size: int = 960, prompts: Optional[list[str]] = None,
-                 negative_prompts: Optional[list[str]] = None):
+                 negative_prompts: Optional[list[str]] = None,
+                 pos_strong: float = 0.25, pos_weak: float = 0.10,
+                 neg_margin: float = 0.10):
         self.model_name = model_name
         self.conf = conf
         self.n_views = n_views
@@ -101,6 +103,12 @@ class OwlDetector(BannerDetector):
         self.prompts = prompts or self.DEFAULT_PROMPTS
         self.negative_prompts = (self.DEFAULT_NEGATIVE_PROMPTS
                                  if negative_prompts is None else negative_prompts)
+        # Пороги margin-фильтра. Score OWLv2 — не откалиброванная вероятность,
+        # поэтому это стартовые значения, а не универсальные константы: их
+        # нужно подбирать по recall/precision на размеченных панорамах.
+        self.pos_strong = pos_strong
+        self.pos_weak = pos_weak
+        self.neg_margin = neg_margin
         self._model = self._proc = self._device = None
 
     def _load(self):
@@ -117,11 +125,11 @@ class OwlDetector(BannerDetector):
 
     def detect(self, overview: Image.Image) -> list[Detection]:
         import torch
+        from types import SimpleNamespace
         from .reproject import horizon_views
 
         model = self._load()
-        # Рекламные промпты идут первыми: всё, что модель отнесла к индексам
-        # за их пределами, — отвлекающий класс, такую детекцию выбрасываем.
+        # Рекламные промпты идут первыми — по границе n_ad делится logits.
         all_prompts = list(self.prompts) + list(self.negative_prompts)
         n_ad = len(self.prompts)
 
@@ -135,22 +143,58 @@ class OwlDetector(BannerDetector):
             with torch.no_grad():
                 outputs = model(**inputs)
             sizes = torch.tensor([img.size[::-1]]).to(self._device)  # (h, w)
-            res = self._proc.post_process_grounded_object_detection(
-                outputs, threshold=self.conf, target_sizes=sizes)[0]
+
+            # Раньше здесь стоял argmax по всем запросам и отбрасывалось всё,
+            # что победил отвлекающий класс. Это слишком жёстко: у OWLv2
+            # берётся max логита по запросам, и табличка, проигравшая
+            # «дорожному знаку» 0.32 против 0.31, исчезала навсегда — хотя
+            # разница случайная, а ниже по конвейеру стоит OCR, который
+            # разберётся точнее. Теперь считаем лучший положительный и лучший
+            # отрицательный отдельно и решаем по разнице.
+            #
+            # Боксы у OWLv2 нормированы относительно дополненного до квадрата
+            # изображения, распаковку делает сам процессор — поэтому логиты
+            # режем на две половины и прогоняем каждую через официальный
+            # post-process с порогом 0. При нулевом пороге ничего не
+            # отфильтровывается, порядок сохраняется, и индекс i в обоих
+            # результатах — один и тот же patch.
+            pos_out = SimpleNamespace(logits=outputs.logits[..., :n_ad],
+                                      pred_boxes=outputs.pred_boxes)
+            neg_out = SimpleNamespace(logits=outputs.logits[..., n_ad:],
+                                      pred_boxes=outputs.pred_boxes)
+            rp = self._proc.post_process_grounded_object_detection(
+                pos_out, threshold=0.0, target_sizes=sizes)[0]
+            rn = self._proc.post_process_grounded_object_detection(
+                neg_out, threshold=0.0, target_sizes=sizes)[0]
+
             uv = view.uv_map
-            for box, score, label in zip(res["boxes"].tolist(),
-                                         res["scores"].tolist(),
-                                         res["labels"].tolist()):
-                if int(label) >= n_ad:          # знак / фонарь / машина / площадка
+            pscores = rp["scores"].tolist()
+            nscores = rn["scores"].tolist()
+            plabels = rp["labels"].tolist()
+            boxes = rp["boxes"].tolist()
+
+            for i in range(len(pscores)):
+                pos, neg = pscores[i], nscores[i]
+                # Три зоны вместо двух: уверенно похоже — берём; похоже слабо,
+                # но мусор не доминирует — тоже берём, пусть решает OCR;
+                # остальное отбрасываем.
+                if pos >= self.pos_strong:
+                    keep = True
+                elif pos >= self.pos_weak and neg <= pos + self.neg_margin:
+                    keep = True
+                else:
+                    keep = False
+                if not keep:
                     dropped += 1
                     continue
-                x0, y0, x1, y1 = (int(v) for v in box)
-                det = _box_to_equirect(uv, x0, y0, x1, y1, float(score))
+                x0, y0, x1, y1 = (int(v) for v in boxes[i])
+                det = _box_to_equirect(uv, x0, y0, x1, y1, float(pos))
                 if det is not None:
-                    det.label = all_prompts[int(label)]
+                    det.label = all_prompts[int(plabels[i])]
                     dets.append(det)
         if dropped:
-            log.info("отброшено по отвлекающим классам: %d детекций", dropped)
+            log.info("отброшено детектором: %d (порог %.2f / слабый %.2f / запас %.2f)",
+                     dropped, self.pos_strong, self.pos_weak, self.neg_margin)
         return _dedup_overlaps(dets)
 
 
@@ -204,5 +248,8 @@ def build_detector(cfg) -> BannerDetector:
             conf=cfg.get("detector.conf", 0.20),
             prompts=cfg.get("detector.prompts", None),
             negative_prompts=cfg.get("detector.negative_prompts", None),
+            pos_strong=cfg.get("detector.pos_strong", 0.25),
+            pos_weak=cfg.get("detector.pos_weak", 0.10),
+            neg_margin=cfg.get("detector.neg_margin", 0.10),
         )
     return RegionDetector(cfg.get("detector.regions", []))

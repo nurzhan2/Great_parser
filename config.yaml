@@ -30,14 +30,26 @@ detector:
     - "a billboard advertisement"
     - "an advertising banner on a construction fence"
     - "a large printed advertisement with text"
+  # Отвлекающие классы описывают ТОЛЬКО мусор, но не фон целевых объектов.
+  # Прежний список содержал «a residential apartment building», «trees and
+  # bushes» и «a wall with graffiti» — это фон баннера на ограждении, и такие
+  # классы перехватывали законные детекции.
   negative_prompts:
     - "a road traffic sign"
-    - "a children playground"
+    - "a street name or address sign"
+    - "a storefront or business sign"
+    - "a government or municipal information sign"
+    - "a vehicle license plate"
+    - "a public transport sign"
     - "a street lamp post"
-    - "a residential apartment building"
     - "a parked car"
-    - "trees and bushes"
-    - "a wall with graffiti"
+  # Margin-фильтр вместо argmax по всем запросам. Отбрасываем не то, где
+  # отвлекающий класс победил на сотые доли, а только то, где он доминирует.
+  # Спорное уходит дальше — ниже по конвейеру стоит OCR, он точнее.
+  # Значения стартовые: score OWLv2 не откалиброван, подбирать по разметке.
+  pos_strong: 0.25     # уверенно похоже — берём независимо от отвлекающих
+  pos_weak: 0.10       # слабо похоже — берём, если мусор не доминирует
+  neg_margin: 0.10     # насколько отвлекающий должен превзойти, чтобы отбросить
   # Потолок сохраняемых баннеров с одной панорамы: на одной панораме бывает
   # 180+ детекций, без потолка ограждение даст сотню записей за визит.
   max_per_panorama: 10
