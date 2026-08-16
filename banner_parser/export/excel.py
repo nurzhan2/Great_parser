@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import xlsxwriter
@@ -11,20 +12,27 @@ from ..storage import Storage
 
 log = logging.getLogger(__name__)
 
+# Порядок под задачу продавца рекламных мест: где стоит -> что за
+# конструкция -> кто висит -> как связаться. Контакты РАЗВЕДЕНЫ по источнику:
+# прочитанное со щита и взятое из справочника — данные разной надёжности,
+# и смешивать их в одной колонке нельзя.
 COLUMNS = [
-    ("crop", "Баннер", 62),
-    ("advertiser", "Рекламодатель", 22),
-    ("category", "Тема", 14),
-    ("phones", "Телефоны", 20),
-    ("sites", "Сайт", 22),
-    ("telegram", "Telegram", 16),
-    ("address", "Адрес", 28),
-    ("text", "Распознанный текст", 40),
-    ("bearing_deg", "Азимут°", 9),
-    ("lon", "Долгота", 12),
-    ("lat", "Широта", 12),
-    ("source_url", "Ссылка", 26),
-    ("banner_id", "ID", 16),
+    ("crop", "Фото щита", 58),
+    ("address", "Адрес", 30),
+    ("construction", "Тип конструкции", 18),
+    ("brand", "Рекламодатель", 22),
+    ("category", "Категория", 14),
+    ("phones", "Телефон СО ЩИТА", 18),
+    ("sites", "Сайт СО ЩИТА", 20),
+    ("dir_phone", "Телефон из справочника", 20),
+    ("dir_site", "Сайт из справочника", 20),
+    ("phones_unreliable", "Ненадёжные контакты", 20),
+    ("shot_date", "Дата съёмки", 13),
+    ("lat", "Широта", 11),
+    ("lon", "Долгота", 11),
+    ("source_url", "Панорама", 13),
+    ("text", "Текст со щита", 34),
+    ("banner_id", "ID", 14),
 ]
 
 _ROW_H = 210            # высота строки под картинку, px
@@ -53,25 +61,49 @@ def export_xlsx(storage: Storage, out_path: str, category: str | None = None) ->
     ws.freeze_panes(1, 0)
 
     col_idx = {key: i for i, (key, _, _) in enumerate(COLUMNS)}
+    warn = wb.add_format({"valign": "vcenter", "text_wrap": True, "border": 1,
+                          "font_color": "#9C0006", "bg_color": "#FFC7CE"})
+    dir_fmt = wb.add_format({"valign": "vcenter", "text_wrap": True, "border": 1,
+                             "italic": True, "font_color": "#3F5F8F"})
     n = 0
     for r, row in enumerate(storage.all(category), start=1):
         ws.set_row(r, _ROW_H)
-        ws.write(r, col_idx["banner_id"], row["banner_id"], cell)
-        ws.write(r, col_idx["category"], row["category"], cell)
-        ws.write(r, col_idx["phones"], row["phones"] or "", cell)
-        ws.write(r, col_idx["address"], row["address"] or "", cell)
-        ws.write(r, col_idx["bearing_deg"],
-                 round(row["bearing_deg"], 1) if row["bearing_deg"] is not None else "", cell)
-        ws.write(r, col_idx["lon"], row["lon"], cell)
+        keys = row.keys()
+
+        def val(k):
+            return (row[k] if k in keys else None) or ""
+
+        # Бренд: каноничный из справочника, иначе — как прочитано со щита,
+        # с пометкой, что он не опознан.
+        brand = val("brand") or val("advertiser")
+        matched = bool(row["brand_matched"]) if "brand_matched" in keys else False
+        if brand and not matched:
+            brand = f"{brand} (не опознан)"
+
+        ws.write(r, col_idx["address"], val("address"), cell)
+        ws.write(r, col_idx["construction"], val("construction"), cell)
+        ws.write(r, col_idx["brand"], brand, cell)
+        ws.write(r, col_idx["category"], val("category"), cell)
+        ws.write(r, col_idx["phones"], val("phones"), cell)
+        ws.write(r, col_idx["sites"], val("sites"), cell)
+        ws.write(r, col_idx["dir_phone"], val("dir_phone"), dir_fmt)
+        ws.write(r, col_idx["dir_site"], val("dir_site"), dir_fmt)
+        ws.write(r, col_idx["phones_unreliable"], val("phones_unreliable"), warn)
+        ts = row["timestamp"] if "timestamp" in keys else None
+        ws.write(r, col_idx["shot_date"],
+                 datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "", cell)
         ws.write(r, col_idx["lat"], row["lat"], cell)
-        ws.write(r, col_idx["text"], row["text"] or "", cell)
+        ws.write(r, col_idx["lon"], row["lon"], cell)
+        ws.write(r, col_idx["text"], val("text"), cell)
+        ws.write(r, col_idx["banner_id"], val("banner_id"), cell)
         if row["source_url"]:
-            ws.write_url(r, col_idx["source_url"], row["source_url"], cell, "открыть")
+            ws.write_url(r, col_idx["source_url"], row["source_url"], cell, "смотреть")
         else:
             ws.write(r, col_idx["source_url"], "", cell)
         _embed(ws, r, col_idx["crop"], row["crop_image_path"], cell)
         n += 1
 
+    ws.autofilter(0, 1, max(1, n), len(COLUMNS) - 1)
     wb.close()
     log.info("export: %d rows -> %s", n, out_path)
     return n
