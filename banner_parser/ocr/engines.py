@@ -38,6 +38,11 @@ class OcrResult:
     advertiser: Optional[str] = None      # кто рекламируется — умеет только VLM
     category: Optional[str] = None        # тема — умеет только VLM
     construction: Optional[str] = None    # тип конструкции — умеет только VLM
+    is_realty: Optional[str] = None       # да | нет | не уверен
+    developer: Optional[str] = None       # застройщик
+    complex_name: Optional[str] = None    # название ЖК
+    offer_type: Optional[str] = None      # новостройка | аренда | ипотека | ...
+    advertiser_type: Optional[str] = None # застройщик | агентство | банк | частное лицо
     engine: str = ""
     failed: bool = False                  # движок не смог; запись помечается
     usage: dict = field(default_factory=dict)   # токены для подсчёта стоимости
@@ -53,11 +58,14 @@ class ResultCache:
         self.conn.execute("""CREATE TABLE IF NOT EXISTS ocr_cache (
             key TEXT PRIMARY KEY, engine TEXT, text TEXT,
             advertiser TEXT, category TEXT, construction TEXT,
+            is_realty TEXT, developer TEXT, complex_name TEXT,
+            offer_type TEXT, advertiser_type TEXT,
             usage TEXT, created REAL)""")
         # CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, поэтому
         # старый кэш остаётся без новых колонок и падает на SELECT.
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(ocr_cache)")}
-        for col in ("construction",):
+        for col in ("construction", "is_realty", "developer", "complex_name",
+                    "offer_type", "advertiser_type"):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE ocr_cache ADD COLUMN {col} TEXT")
         self.conn.commit()
@@ -71,23 +79,29 @@ class ResultCache:
 
     def get(self, k: str) -> Optional[OcrResult]:
         row = self.conn.execute(
-            "SELECT engine, text, advertiser, category, construction, usage FROM ocr_cache WHERE key=?",
+            "SELECT engine, text, advertiser, category, construction, is_realty, "
+            "developer, complex_name, offer_type, advertiser_type, usage "
+            "FROM ocr_cache WHERE key=?",
             (k,)).fetchone()
         if row is None:
             self.misses += 1
             return None
         self.hits += 1
         return OcrResult(text=row[1] or "", advertiser=row[2], category=row[3],
-                         construction=row[4], engine=row[0],
-                         usage=json.loads(row[5] or "{}"))
+                         construction=row[4], is_realty=row[5], developer=row[6],
+                         complex_name=row[7], offer_type=row[8],
+                         advertiser_type=row[9], engine=row[0],
+                         usage=json.loads(row[10] or "{}"))
 
     def put(self, k: str, r: OcrResult) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO ocr_cache "
-            "(key, engine, text, advertiser, category, construction, usage, created) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(key, engine, text, advertiser, category, construction, is_realty, "
+            "developer, complex_name, offer_type, advertiser_type, usage, created) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (k, r.engine, r.text, r.advertiser, r.category, r.construction,
-             json.dumps(r.usage), time.time()))
+             r.is_realty, r.developer, r.complex_name, r.offer_type,
+             r.advertiser_type, json.dumps(r.usage), time.time()))
         self.conn.commit()
 
     def close(self) -> None:
@@ -175,22 +189,30 @@ class PaddleOcrBackend(OcrBackend):
 
 # Версия промпта входит в ключ кэша: при смене промпта старые ответы
 # невалидны, и молча отдавать их из кэша нельзя.
-VLM_PROMPT_VERSION = "v2-brand"
+VLM_PROMPT_VERSION = "v3-realty"
 
 _VLM_PROMPT = (
     "На изображении — фрагмент наружной рекламы из панорамы улицы.\n"
+    "Нас интересует ТОЛЬКО реклама недвижимости: застройщики, жилые "
+    "комплексы, агентства недвижимости, продажа и аренда жилой и "
+    "коммерческой недвижимости, ипотечные предложения банков.\n"
     "Верни СТРОГО JSON без пояснений и без markdown-обёртки, с полями:\n"
-    '  "advertiser" — ГЛАВНОЕ ПОЛЕ. Название бренда или рекламодателя. '
-    "Крупный логотип и название читаются надёжно — назови их уверенно, "
-    "даже если остальной текст мелкий. Если рекламы нет вовсе — null.\n"
-    '  "text" — крупный читаемый текст: слоган, название, условия. '
-    "Дословно, сохраняя порядок строк. Мелкий нечитаемый шрифт "
-    "не восстанавливай — лучше пропусти.\n"
-    '  "category" — одна из: недвижимость, авто, финансы, медицина, ретейл, '
-    "услуги, развлечения, другое. Если непонятно — null.\n"
-    '  "construction" — тип рекламной конструкции, одно из: билборд, '
-    "ситиформат, баннер на ограждении, вывеска, стела, экран, "
-    "реклама на остановке, другое. Определяй по форме и размещению.\n"
+    '  "is_realty" — "да", "нет" или "не уверен". Реклама магазина, кафе, '
+    "автосервиса, кино, банка без ипотеки — это \"нет\".\n"
+    '  "advertiser" — название бренда или рекламодателя как написано.\n'
+    '  "construction" — тип конструкции: билборд, ситиформат, баннер на '
+    "ограждении, вывеска, стела, экран, реклама на остановке, другое.\n"
+    '  "text" — крупный читаемый текст дословно. Мелкий нечитаемый шрифт '
+    "не восстанавливай.\n"
+    "Если is_realty = \"да\", дополнительно:\n"
+    '  "developer" — застройщик или компания-рекламодатель;\n'
+    '  "complex_name" — название жилого комплекса (ЖК), если указано. '
+    "Это ОТДЕЛЬНАЯ сущность от застройщика: «Квартал Домашний» — это ЖК, "
+    "а застройщик у него «Самолёт».\n"
+    '  "offer_type" — одно из: новостройка, вторичка, аренда жилая, '
+    "аренда коммерческая, ипотека, загородная;\n"
+    '  "advertiser_type" — одно из: застройщик, агентство, банк, частное лицо. '
+    "Частное лицо — это «сдам»/«продам» с личным номером и без юрлица.\n"
     '  "phone" и "site" — ТОЛЬКО если символы видны крупно и однозначно. '
     "Если шрифт мелкий, размытый или ты не уверен хотя бы в одном символе — "
     "верни null. НЕ достраивай домен по названию бренда и НЕ угадывай цифры: "
@@ -299,10 +321,14 @@ def _parse_vlm(raw: str, usage: dict, engine: str) -> OcrResult:
     for extra in (d.get("phone"), d.get("site")):
         if extra and str(extra).lower() not in ("null", "none"):
             text = (text + "\n" + str(extra)).strip()
+    g = lambda k: (str(d.get(k)).strip() if d.get(k) else None)
     return OcrResult(text=text,
                      advertiser=(d.get("advertiser") or None),
                      category=(str(cat) if cat else None),
                      construction=(str(con) if con else None),
+                     is_realty=g("is_realty"), developer=g("developer"),
+                     complex_name=g("complex_name"), offer_type=g("offer_type"),
+                     advertiser_type=g("advertiser_type"),
                      engine=engine, usage=usage)
 
 
