@@ -54,6 +54,12 @@ class ResultCache:
             key TEXT PRIMARY KEY, engine TEXT, text TEXT,
             advertiser TEXT, category TEXT, construction TEXT,
             usage TEXT, created REAL)""")
+        # CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, поэтому
+        # старый кэш остаётся без новых колонок и падает на SELECT.
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(ocr_cache)")}
+        for col in ("construction",):
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE ocr_cache ADD COLUMN {col} TEXT")
         self.conn.commit()
         self.hits = self.misses = 0
 
@@ -77,7 +83,9 @@ class ResultCache:
 
     def put(self, k: str, r: OcrResult) -> None:
         self.conn.execute(
-            "INSERT OR REPLACE INTO ocr_cache VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO ocr_cache "
+            "(key, engine, text, advertiser, category, construction, usage, created) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (k, r.engine, r.text, r.advertiser, r.category, r.construction,
              json.dumps(r.usage), time.time()))
         self.conn.commit()
