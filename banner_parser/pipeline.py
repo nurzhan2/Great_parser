@@ -165,7 +165,7 @@ class Pipeline:
                  if self.brands else None)
         # Частное объявление в общую базу контактов не идёт: это физлицо,
         # а не рекламодатель рынка. Считаем таким, если движок так сказал.
-        personal = bool(ocr_res and (ocr_res.advertiser_type or "").lower().startswith(""))
+        personal = False 
         if binfo is not None and binfo.matched and not category:
             category = binfo.category or category
         # Фильтра по теме здесь БОЛЬШЕ НЕТ. «Это реклама» решает детекция и
