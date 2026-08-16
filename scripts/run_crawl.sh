@@ -61,11 +61,20 @@ mkdir -p "$YOLO_CONFIG_DIR" "$MPLCONFIGDIR" 2>/dev/null
 say "YOLO_CONFIG_DIR : $YOLO_CONFIG_DIR"
 
 # --- предполётная проверка --------------------------------------------------
-# Именно этот импорт падал раньше. Проверяем ДО тяжёлого запуска и с диагнозом.
-if ! "$PY" -c "import banner_parser" 2>>"$LOG"; then
-    say "модуль banner_parser не импортируется из $(pwd)"
+
+# Сначала проверяем синтаксис всех Python-файлов.
+# Это поймает IndentationError, SyntaxError и подобные ошибки
+# ещё до запуска тяжёлых моделей.
+if ! "$PY" -m compileall -q banner_parser scripts 2>>"$LOG"; then
+    die "синтаксическая ошибка Python — см. лог выше"
+fi
+
+# Проверяем уже не пустой пакет banner_parser,
+# а реальный CLI со всеми его импортами.
+if ! "$PY" -c "from banner_parser.cli import build_parser" 2>>"$LOG"; then
+    say "модули banner_parser не импортируются из $(pwd)"
     say "содержимое каталога: $(ls -1 | tr '\n' ' ')"
-    die "запускать нужно из каталога проекта; трассировка импорта — выше в логе"
+    die "ошибка импорта модулей проекта — трассировка выше в логе"
 fi
 [ -f config.yaml ] || die "нет config.yaml в $(pwd)"
 
