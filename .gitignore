@@ -34,3 +34,8 @@ backups/
 # Артефакты диагностики
 /tmp_inspect/
 inspect/
+
+# Кэш Overpass от osmnx и резервные копии патчей
+cache/
+*.bak_*
+*.bak

@@ -1,6 +1,6 @@
 """Оркестрация: панорама → детекция → кроп → OCR → классификация → запись."""
 from __future__ import annotations
-
+from .export.google_sheets import build_google_sheets
 import hashlib
 import logging
 import math
@@ -41,6 +41,7 @@ class Pipeline:
             dedup_radius_m=cfg.get("dedup.radius_m", 25.0),
             dedup_phone_radius_m=cfg.get("dedup.phone_radius_m", 300.0),
             dedup_assumed_distance_m=cfg.get("dedup.assumed_distance_m", 25.0))
+        self.google_sheets = build_google_sheets(cfg)
         self.images_dir = Path(cfg.get("storage.images_dir", "data/images"))
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.overview_zoom = cfg.get("panorama.overview_zoom", 2)
@@ -117,9 +118,20 @@ class Pipeline:
             # на тестовой панораме это 24 файла при 5 записях.
             crop.save(rec.crop_image_path, quality=92)
             saved.append(rec)
+
+        # Все новые лиды с этой панорамы отправляем в Google Sheets
+        # одним запросом. Если Google недоступен, SQLite всё равно сохранён.
+        if saved and self.google_sheets is not None:
+            self.google_sheets.append_many(saved)
+
         if len(dets) > self.max_candidates:
-            log.info("панорама %s: разобрано %d кандидатов из %d (потолок разбора)",
-                     pid, self.max_candidates, len(dets))
+            log.info(
+                "панорама %s: разобрано %d кандидатов из %d (потолок разбора)",
+                pid,
+                self.max_candidates,
+                len(dets),
+            )
+
         log.info("панорама %s: сохранено %d баннеров", pid, len(saved))
         return saved
 
@@ -295,7 +307,8 @@ class Pipeline:
             score=det.score,
             full_image_path=None,
             crop_image_path=str(crop_path),
-            source_url=_yandex_url(pano.ref.lon, pano.ref.lat, bearing),
+            source_url=_yandex_url(pano.ref.lon, pano.ref.lat, bearing,
+                                   pano.ref.panoid),
         ), crop
 
     # ---- точка / обход ---------------------------------------------------
@@ -462,7 +475,20 @@ def _too_close(lon: float, lat: float, points, min_dist: float) -> bool:
     return any(_haversine_m(lon, lat, plon, plat) < min_dist for plon, plat in points)
 
 
-def _yandex_url(lon: float, lat: float, bearing: Optional[float]) -> str:
+def _yandex_url(lon: float, lat: float, bearing: Optional[float],
+                panoid: Optional[str] = None) -> str:
+    """Ссылка на панораму, где найден баннер.
+
+    panorama[point] задаёт только КООРДИНАТУ, и Яндекс показывает по ней
+    самую свежую съёмку. 75 записей из 179 сняты в апреле 2022 — по такой
+    ссылке открывается панорама 2025-2026 годов, где баннера давно нет.
+    panorama[id] прибивает конкретную панораму. Параметр добавлен
+    дополнительно к прежним: если Яндекс его не поймёт, он его
+    проигнорирует и поведение останется прежним.
+    """
     d = f"{bearing:.1f}" if bearing is not None else "0"
-    return (f"https://yandex.ru/maps/?l=stv,sta&panorama%5Bpoint%5D={lon},{lat}"
-            f"&panorama%5Bdirection%5D={d},0&panorama%5Bfull%5D=true")
+    url = (f"https://yandex.ru/maps/?l=stv,sta&panorama%5Bpoint%5D={lon},{lat}"
+           f"&panorama%5Bdirection%5D={d},0&panorama%5Bfull%5D=true")
+    if panoid:
+        url += f"&panorama%5Bid%5D={panoid}"
+    return url

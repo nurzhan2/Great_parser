@@ -363,6 +363,48 @@ class OpenAiBackend(CloudVlmBackend):
                      "output_tokens": getattr(u, "completion_tokens", 0)}
 
 
+class GeminiBackend(CloudVlmBackend):
+    """Google Gemini. Промпт, парсер и политика ошибок — те же, что у Anthropic
+    и OpenAI: расхождение промптов между провайдерами вернуло бы выдуманные
+    контакты. Ключ — только из GEMINI_API_KEY.
+
+    Смысл движка — бесплатный тариф Gemini Developer API: Flash-модели там
+    доступны без оплаты, зрение полноценное (в отличие от DeepSeek, где
+    картинка режется до 384 токенов и мелкий текст не выживает).
+    Лимиты бесплатного тарифа — порядка 10 запросов в минуту и ~1500 в сутки,
+    поэтому при 12 вызовах на панораму выходит около сотни панорам в день.
+    Ошибку 429 базовый класс уже трактует как повторяемую и ждёт с ростом
+    паузы, так что упор в лимит замедляет обход, но не роняет его.
+    """
+    name = "gemini-" + VLM_PROMPT_VERSION
+    env_key = "GEMINI_API_KEY"
+
+    def __init__(self, model: str = "gemini-2.5-flash", max_side: int = 1024,
+                 max_retries: int = 4, timeout: float = 60.0):
+        super().__init__(model, max_side, max_retries, timeout)
+
+    def _make_client(self, key: str):
+        # Новый SDK google-genai; старый google-generativeai не поддерживается.
+        from google import genai
+        return genai.Client(api_key=key)
+
+    def _call(self, client, data_b64: str):
+        import base64
+        from google.genai import types
+        r = client.models.generate_content(
+            model=self.model,
+            contents=[
+                types.Part.from_bytes(data=base64.b64decode(data_b64),
+                                      mime_type="image/jpeg"),
+                _VLM_PROMPT,
+            ],
+            config=types.GenerateContentConfig(max_output_tokens=1500))
+        raw = r.text or ""
+        u = getattr(r, "usage_metadata", None)
+        return raw, {"input_tokens": getattr(u, "prompt_token_count", 0) or 0,
+                     "output_tokens": getattr(u, "candidates_token_count", 0) or 0}
+
+
 def _parse_vlm(raw: str, usage: dict, engine: str) -> OcrResult:
     """Разбор ответа модели. Модель просили отдать чистый JSON, но обёртку в
     ```json ... ``` терпим — на этом ломаться не за чем."""
@@ -400,6 +442,10 @@ def build_backend(cfg) -> OcrBackend:
         return PaddleOcrBackend(lang=cfg.get("ocr.paddle_lang", "ru"))
     if name == "openai":
         return OpenAiBackend(model=cfg.get("ocr.openai_model", "gpt-4o-mini"),
+                             max_side=cfg.get("ocr.vlm_max_side", 1024),
+                             max_retries=cfg.get("ocr.vlm_max_retries", 4))
+    if name == "gemini":
+        return GeminiBackend(model=cfg.get("ocr.gemini_model", "gemini-2.5-flash"),
                              max_side=cfg.get("ocr.vlm_max_side", 1024),
                              max_retries=cfg.get("ocr.vlm_max_retries", 4))
     if name == "vlm":
