@@ -405,6 +405,115 @@ class GeminiBackend(CloudVlmBackend):
                      "output_tokens": getattr(u, "candidates_token_count", 0) or 0}
 
 
+class DeepSeekBackend(CloudVlmBackend):
+    """DeepSeek V4-Flash-Vision. Самый дешёвый из доступных с российского
+    хостинга: ~$0.22 за 1M входных токенов вне пика против $1 у Haiku 4.5.
+
+    Ограничение и обход. DeepSeek ужимает каждую картинку до бюджета примерно
+    800x800 пикселей и берёт максимум 384 токена за штуку. Для щита с
+    телефоном это мало: 384 токена на весь кадр — вчетверо грубее, чем даёт
+    Claude на том же кропе, и мелкие цифры в такой сетке смазываются.
+
+    Но потолок применяется К КАЖДОЙ картинке отдельно, а в один запрос их
+    влезает до 600. Поэтому крупный кроп режем на плитки: 2x2 с перехлёстом
+    дают 4x384 токена вместо 384, и каждая плитка укладывается в бюджет
+    800x800 без ужатия, то есть идёт в родном разрешении.
+
+    Перехлёст обязателен: телефон, попавший на стык плиток, иначе разорвётся
+    пополам и не соберётся ни в одной. При 15% один и тот же номер целиком
+    виден хотя бы в одной плитке.
+
+    Мелкие кропы не режем — они и так проходят под бюджет, а нарезка только
+    добавила бы вызовов. Обзорную картинку целиком шлём всегда: по плиткам
+    модель не поймёт, что это один щит, и придумает несколько объявлений.
+    """
+    name = "deepseek-" + VLM_PROMPT_VERSION
+    env_key = "DEEPSEEK_API_KEY"
+
+    BUDGET_PX = 640_000        # ~800x800: выше этого DeepSeek ужимает картинку
+    OVERLAP = 0.15             # перехлёст плиток
+    # Ниже этой стороны резать нечего: плитки выйдут меньше 80 пикселей.
+    # Порог по площади был ошибкой: кропы 391x303 и 359x468 уходили одной
+    # картинкой и возвращали пустоту там, где Sonnet читал текст. Мелкому
+    # кропу нарезка нужна не меньше — DeepSeek дотягивает каждую плитку до
+    # 384x384, то есть мелкий текст идёт с увеличением, а не с ужатием.
+    TILE_MIN_SIDE = 160
+
+    def __init__(self, model: str = "deepseek-v4-flash-vision-exp",
+                 max_side: int = 1024, max_retries: int = 4,
+                 timeout: float = 90.0, tile: bool = True):
+        super().__init__(model, max_side, max_retries, timeout)
+        self.tile = tile
+
+    def _make_client(self, key: str):
+        # API совместим с OpenAI, отдельный SDK не нужен.
+        from openai import OpenAI
+        return OpenAI(api_key=key, base_url="https://api.deepseek.com",
+                      timeout=self.timeout)
+
+    @staticmethod
+    def _b64(im) -> str:
+        buf = io.BytesIO()
+        im.convert("RGB").save(buf, format="JPEG", quality=90)
+        return base64.b64encode(buf.getvalue()).decode()
+
+    def _encode(self, image):
+        """Список base64: обзорная картинка + плитки. Базовый read() передаёт
+        результат в _call() не разбирая, поэтому список тут допустим."""
+        im = image.convert("RGB")
+
+        # Обзорная — ужимаем как обычно, её задача дать модели общий вид.
+        overview = im
+        k = self.max_side / max(im.size)
+        if k < 1:
+            overview = im.resize((max(1, int(im.width * k)),
+                                  max(1, int(im.height * k))), Image.LANCZOS)
+        out = [self._b64(overview)]
+
+        w, h = im.size
+        if not self.tile or min(w, h) < self.TILE_MIN_SIDE:
+            return out                     # совсем мелкий кроп резать бессмысленно
+
+        ox, oy = int(w * self.OVERLAP / 2), int(h * self.OVERLAP / 2)
+        for row in (0, 1):
+            for col in (0, 1):
+                left = max(0, col * w // 2 - ox)
+                top = max(0, row * h // 2 - oy)
+                right = min(w, (col + 1) * w // 2 + ox)
+                bottom = min(h, (row + 1) * h // 2 + oy)
+                out.append(self._b64(im.crop((left, top, right, bottom))))
+        log.debug("%s: кроп %dx%d -> %d изображений", self.name, w, h, len(out))
+        return out
+
+    def _call(self, client, data):
+        # Пояснение про плитки идёт ОТДЕЛЬНЫМ текстом перед общим промптом:
+        # сам промпт v3 един для всех провайдеров и не правится.
+        content = []
+        if isinstance(data, str):
+            data = [data]
+        if len(data) > 1:
+            content.append({"type": "text", "text":
+                "Ниже одно и то же рекламное изображение: сначала целиком, "
+                "затем его фрагменты крупным планом с перехлёстом. Это ОДИН "
+                "объект, а не несколько. Используй фрагменты, чтобы разобрать "
+                "мелкий текст и цифры телефона, и ответь одним JSON."})
+        for b in data:
+            content.append({"type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b}"}})
+        content.append({"type": "text", "text": _VLM_PROMPT})
+
+        r = client.chat.completions.create(
+            model=self.model, max_tokens=1500,
+            messages=[{"role": "user", "content": content}],
+            # Размышление включено по умолчанию на высоком уровне и жжёт токены,
+            # а для чтения текста с картинки оно не нужно.
+            extra_body={"thinking": {"type": "disabled"}})
+        raw = r.choices[0].message.content or ""
+        u = getattr(r, "usage", None)
+        return raw, {"input_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                     "output_tokens": getattr(u, "completion_tokens", 0) or 0}
+
+
 def _parse_vlm(raw: str, usage: dict, engine: str) -> OcrResult:
     """Разбор ответа модели. Модель просили отдать чистый JSON, но обёртку в
     ```json ... ``` терпим — на этом ломаться не за чем."""
@@ -444,6 +553,12 @@ def build_backend(cfg) -> OcrBackend:
         return OpenAiBackend(model=cfg.get("ocr.openai_model", "gpt-4o-mini"),
                              max_side=cfg.get("ocr.vlm_max_side", 1024),
                              max_retries=cfg.get("ocr.vlm_max_retries", 4))
+    if name == "deepseek":
+        return DeepSeekBackend(
+            model=cfg.get("ocr.deepseek_model", "deepseek-v4-flash-vision-exp"),
+            max_side=cfg.get("ocr.vlm_max_side", 1024),
+            max_retries=cfg.get("ocr.vlm_max_retries", 4),
+            tile=cfg.get("ocr.deepseek_tile", True))
     if name == "gemini":
         return GeminiBackend(model=cfg.get("ocr.gemini_model", "gemini-2.5-flash"),
                              max_side=cfg.get("ocr.vlm_max_side", 1024),

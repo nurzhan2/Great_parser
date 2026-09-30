@@ -21,7 +21,9 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
+import os
 import sys
 import time
 from collections import Counter
@@ -174,8 +176,47 @@ def road_seeds_private(bbox, step_m=60.0, road_classes=PRIVATE_ROAD_CLASSES):
                 yield p.x, p.y
 
 
+# ---- окно дешёвых часов и бюджет ----------------------------------------
+# DeepSeek с 16.08.2026 берёт двойную цену в пик: 01:00-04:00 и 06:00-10:00
+# UTC по будням (по Москве 04:00-07:00 и 09:00-13:00). Выходные целиком
+# дешёвые. Скидка ровно 50% и включается автоматически по времени запроса,
+# поэтому единственный способ ей воспользоваться — не слать запросы в пик.
+PEAK_UTC = ((1, 4), (6, 10))
+
+
+def _offpeak_now() -> tuple:
+    """(дешёвый ли час сейчас, сколько минут до конца пика)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if now.weekday() >= 5:                      # суббота и воскресенье
+        return True, 0
+    for a, b in PEAK_UTC:
+        if a <= now.hour < b:
+            end = now.replace(hour=b, minute=0, second=0, microsecond=0)
+            return False, int((end - now).total_seconds() // 60)
+    return True, 0
+
+
+def _balance() -> float:
+    """Остаток на счету DeepSeek в долларах, или None если не узнать."""
+    key = os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        return None
+    try:
+        import urllib.request, json as _json
+        rq = urllib.request.Request(
+            "https://api.deepseek.com/user/balance",
+            headers={"Authorization": f"Bearer {key}"})
+        with urllib.request.urlopen(rq, timeout=20) as r:
+            d = _json.load(r)
+        return float(d["balance_infos"][0]["total_balance"])
+    except Exception as e:      # noqa: BLE001 — недоступность баланса не повод падать
+        log.warning("не удалось прочитать баланс: %s", e)
+        return None
+
+
 # ---- обход ---------------------------------------------------------------
-def crawl_roads(p, bbox, step_m, road_classes, max_points=None):
+def crawl_roads(p, bbox, step_m, road_classes, max_points=None,
+                budget_usd=None, offpeak_only=False):
     """Обход по seed-точкам вдоль улиц. p — готовый Pipeline.
 
     Сетка ячеек min_distance_m, отметка посещённых панорам и весь конвейер —
@@ -195,6 +236,24 @@ def crawl_roads(p, bbox, step_m, road_classes, max_points=None):
 
     seeds = skip_bbox = skip_near = skip_nopano = processed = 0
     t_start = time.monotonic()
+
+    # Бюджет считаем по остатку на счету: это фактические списания, а не
+    # наша оценка по токенам. Проверяем не каждую панораму — запрос к API
+    # баланса тоже стоит времени.
+    start_balance = _balance() if budget_usd else None
+    if budget_usd:
+        if start_balance is None:
+            log.warning("бюджет задан (%.2f $), но баланс недоступен — "
+                        "ограничение работать не будет", budget_usd)
+        else:
+            log.info("бюджет %.2f $, на счету сейчас %.2f $", budget_usd, start_balance)
+    if offpeak_only:
+        ok, mins = _offpeak_now()
+        if not ok:
+            log.error("сейчас пиковый час DeepSeek (цена вдвое выше). "
+                      "До конца пика %d мин. Запуск отменён.", mins)
+            return
+        log.info("час дешёвый, работаем")
     try:
         for lon, lat in road_seeds_private(bbox, step_m, road_classes):
             seeds += 1
@@ -241,9 +300,29 @@ def crawl_roads(p, bbox, step_m, road_classes, max_points=None):
             if max_points and processed >= max_points:
                 log.info("достигнут лимит %d обработанных точек за запуск", max_points)
                 break
+            # Проверки раз в 10 панорам: запрос баланса — это сетевой вызов,
+            # дёргать его на каждой точке дороже, чем экономия от точности.
+            if processed % 10 == 0:
+                if offpeak_only:
+                    ok, mins = _offpeak_now()
+                    if not ok:
+                        log.warning("начался пиковый час DeepSeek — "
+                                    "останавливаемся. До конца пика %d мин", mins)
+                        break
+                if budget_usd and start_balance is not None:
+                    now_bal = _balance()
+                    if now_bal is not None:
+                        spent = start_balance - now_bal
+                        log.info("потрачено %.2f $ из %.2f (осталось на счету %.2f)",
+                                 spent, budget_usd, now_bal)
+                        if spent >= budget_usd:
+                            log.warning("бюджет %.2f $ исчерпан — останавливаемся",
+                                        budget_usd)
+                            break
     finally:
         # Итог печатаем и при обрыве: иначе непонятно, сколько успели снять.
         st.commit()
+        _LAST.update(seeds=seeds, processed=processed)
         log.info("итог обхода по улицам: seed-точек просмотрено %d, реально "
                  "обработано панорам %d; пропущено: ближе %s м — %d, без панорамы "
                  "или уже посещали — %d, вне рамки — %d",
@@ -271,10 +350,75 @@ def build_parser() -> argparse.ArgumentParser:
                          "По умолчанию: " + ", ".join(PRIVATE_ROAD_CLASSES))
     ap.add_argument("--limit", type=int, default=None,
                     help="макс. панорам за запуск (по умолчанию — без лимита)")
+    ap.add_argument("--budget", type=float, default=None, metavar="USD",
+                    help="остановиться, потратив столько долларов (по остатку "
+                         "на счету DeepSeek)")
+    ap.add_argument("--offpeak-only", action="store_true",
+                    help="не работать в пиковые часы DeepSeek (01:00-04:00 и "
+                         "06:00-10:00 UTC по будням), там цена вдвое выше")
     ap.add_argument("--dry-run", action="store_true",
                     help="только посчитать дороги и точки; модели не грузятся, "
                          "панорамы не запрашиваются, БД не трогается")
     return ap
+
+
+def _load_env_file(path="~/.parser_env") -> None:
+    """Подгрузить переменные из файла, если их нет в окружении.
+
+    Cron на Beget не читает ~/.bashrc, и задание стартовало без
+    GOOGLE_SHEET_ID: парсер находил объявления, писал в базу, но в таблицу
+    ничего не уходило. Файл читаем сами, не полагаясь на команду в панели.
+    Уже заданные переменные не перетираем.
+    """
+    p = os.path.expanduser(path)
+    if not os.path.exists(p):
+        return
+    for ln in open(p, encoding="utf-8"):
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        if ln.startswith("export "):
+            ln = ln[7:]
+        if "=" not in ln:
+            continue
+        k, v = ln.split("=", 1)
+        k, v = k.strip(), os.path.expandvars(os.path.expanduser(v.strip().strip("'\"")))
+        os.environ.setdefault(k, v)
+
+
+# Очередь районов. Когда текущий выработан (обход прошёл все точки и не
+# нашёл ни одной непосещённой панорамы), следующий запуск берёт следующий
+# район из очереди. Без этого cron каждый час перебирает пустоту: так и
+# было — сутки подряд «обработано панорам 0».
+CUR_BBOX = "data/current_bbox.txt"
+BBOX_QUEUE = "data/bbox_queue.txt"
+_LAST = {}
+
+
+def _read_bbox(path):
+    try:
+        parts = open(path, encoding="utf-8").read().split()
+        return tuple(float(x) for x in parts[:4]) if len(parts) >= 4 else None
+    except OSError:
+        return None
+
+
+def _advance_bbox() -> None:
+    """Текущий район выработан — берём следующий из очереди."""
+    try:
+        lines = [l for l in open(BBOX_QUEUE, encoding="utf-8").read().splitlines()
+                 if l.strip() and not l.lstrip().startswith("#")]
+    except OSError:
+        log.warning("район выработан, а очереди %s нет — добавьте районы", BBOX_QUEUE)
+        return
+    if not lines:
+        log.warning("район выработан, очередь %s пуста — добавьте районы", BBOX_QUEUE)
+        return
+    nxt, rest = lines[0], lines[1:]
+    open(CUR_BBOX, "w", encoding="utf-8").write(nxt.split("#")[0].strip() + "\n")
+    open(BBOX_QUEUE, "w", encoding="utf-8").write("\n".join(rest) + ("\n" if rest else ""))
+    log.info("район выработан — переходим на следующий: %s (в очереди осталось %d)",
+             nxt, len(rest))
 
 
 def _run(args) -> None:
@@ -284,7 +428,9 @@ def _run(args) -> None:
                                list(PRIVATE_ROAD_CLASSES)))
     step = float(args.step if args.step is not None
                  else cfg.get("private_realty.step_m", 60.0))
-    bbox = args.bbox or cfg.get("crawl.bbox", None)
+    # Текущий район из файла главнее аргумента: его меняет сам обход,
+    # когда район выработан, и команда в планировщике остаётся прежней.
+    bbox = _read_bbox(CUR_BBOX) or args.bbox or cfg.get("crawl.bbox", None)
     if not bbox:
         raise SystemExit("не задан bbox: укажите --bbox или crawl.bbox в config.yaml")
     bbox = tuple(bbox)
@@ -302,11 +448,17 @@ def _run(args) -> None:
     p = Pipeline(cfg)
     total = 0
     try:
-        for r in crawl_roads(p, bbox, step, classes, args.limit):
+        for r in crawl_roads(p, bbox, step, classes, args.limit,
+                             budget_usd=args.budget,
+                             offpeak_only=args.offpeak_only):
             total += 1
             print(f"  [{r.category}] {r.panoid[:16]}… тел: {r.phones or '—'}  "
                   f"{r.address or ''}", flush=True)
     finally:
+        # Выработан: точки есть, а обрабатывать нечего — всё посещено или
+        # без съёмки. Лимит тут ни при чём, он срабатывает при processed > 0.
+        if _LAST.get("seeds", 0) > 0 and _LAST.get("processed", 0) == 0:
+            _advance_bbox()
         log.info("итог: +%d баннеров за запуск, всего в БД %d, посещено панорам %d",
                  total, p.storage.count(), p.storage.visited_count())
         print(f"Обход по улицам остановлен: +{total} баннеров. "
@@ -319,6 +471,7 @@ def main() -> None:
     args = build_parser().parse_args()
     # Порядок как в cli.py: сначала лог и перехватчики, потом шапка, и только
     # потом тяжёлые импорты — иначе смерть на загрузке модели не оставит следа.
+    _load_env_file()
     log_path = runlog.setup_logging(args.log, args.log_level)
     runlog.install_crash_handlers()
     runlog.log_startup(cfg_path=args.config, log_path=log_path)

@@ -39,3 +39,6 @@ inspect/
 cache/
 *.bak_*
 *.bak
+.parser_env
+*.json.key
+sheet_backup_*
